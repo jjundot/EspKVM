@@ -84,9 +84,9 @@ EspKVM/
 ├── experiments/
 │   ├── windows-input/            # M0 平台验证,不被正式程序依赖
 │   └── linux-input/
-└── out/                          # 所有可重建产物,不提交
+└── build/                          # 所有可重建产物,不提交
     ├── device/                   # IDF build 与生成的 C 协议文件
-    ├── build/                    # 根 CMake/Ninja 构建目录
+    ├── cmake/                    # 根 CMake/Ninja 构建目录
     ├── bin/                      # 客户端/CLI 可执行文件
     └── flash/                    # 自包含固件烧录包
 ```
@@ -116,18 +116,18 @@ EspKVM/
 - 根 host 构建目标每次调用 go build,由 Go 缓存负责增量,不单凭最终 exe 时间戳跳过,从而正确追踪 Go 源文件、go.mod/go.sum 和 embed 静态资源变更。协议输入未变时不重新调用 protoc。
 - 固定 protoc、nanopb、protoc-gen-go、IDF、Go 版本。Go module 地址和 go_package 在初始化时统一确定,只保留一个 sources/host/go.mod,不引入 go.work。
 - CI 从干净工作副本执行 CMake configure + Ninja,验证首次构建、无变更构建、修改 proto/options 后重新生成及并行依赖;再执行 C/Go 字节向量测试。生成结果不提交,不再采用“检查已提交生成代码漂移”的流程。
-- out/、生成的 Go 文件、managed_components、机器 sdkconfig 和工具虚拟环境忽略;sdkconfig.defaults、依赖锁文件及协议输入提交。ref/、tmp/ 维持本地参考用途,不作为构建依赖。
+- build/、生成的 Go 文件、managed_components、机器 sdkconfig 和工具虚拟环境忽略;sdkconfig.defaults、依赖锁文件及协议输入提交。ref/、tmp/ 维持本地参考用途,不作为构建依赖。
 
 计划提供以下构建入口;预设、目标和脚本在实施阶段创建:
 
 | 入口 | 用途 |
 |---|---|
-| cmake --preset wsl | 配置根 Ninja 构建,out/build/wsl |
+| cmake --preset wsl | 配置根 Ninja 构建,build/cmake/wsl |
 | cmake --build --preset wsl --target proto | 自动生成两端协议代码,包含必要的 IDF 子构建配置 |
 | cmake --build --preset wsl --target host | 先生成 Go 协议,再构建 Linux 程序与 CLI |
 | cmake --build --preset wsl --target device | IDF 子构建先生成 C 协议,再编译固件 |
 | cmake --build --preset wsl --target test-host test-protocol | 自动生成协议后运行非硬件测试 |
-| cmake --build --preset wsl --target package-device | 构建设备固件并生成 out/flash 自包含烧录包 |
+| cmake --build --preset wsl --target package-device | 构建设备固件并生成 build/flash 自包含烧录包 |
 | cmake --preset host-windows | Windows 原生 Ninja/Go 构建预设,无需 IDF |
 
 构建预设使用仓库相对路径,通过 CMake 自身源码目录定位 sources/,不依赖调用者 cwd。若 host 依赖支持纯 Go 交叉编译,再提供 WSL 到 Windows 的独立预设;含 CGO 则使用 Windows runner/本机。交叉编译成功不能替代 Windows 输入行为验证。

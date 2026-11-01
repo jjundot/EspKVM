@@ -1,7 +1,7 @@
 
 ref/
 tmp/
-out/
+build/
 sources/host/internal/protocol/pb/*.pb.go
 sources/device/build/
 sources/device/managed_components/

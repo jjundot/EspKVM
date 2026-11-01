@@ -20,11 +20,12 @@ jobs:
       - uses: seanmiddleditch/gha-setup-ninja@v5
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
-      - run: cmake -S . -B out/build/ci -G Ninja
-      - run: cmake --build out/build/ci --target host test-host test-protocol
+      - run: cmake -S . -B build/cmake/ci -G Ninja
+      - run: cmake --build build/cmake/ci
+      - run: cmake --build build/cmake/ci --target test-host test-protocol
       - name: No-change and schema dependency rebuild
         shell: bash
         run: |
-          cmake --build out/build/ci --target proto
+          cmake --build build/cmake/ci --target proto
           python -c "from pathlib import Path; Path('sources/protocol/ek.options').touch()"
-          cmake --build out/build/ci --target proto host
+          cmake --build build/cmake/ci --target proto host

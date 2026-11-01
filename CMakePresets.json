@@ -1,9 +1,9 @@
 {
  "version": 6,
  "configurePresets": [
-  {"name":"host-linux","generator":"Ninja","binaryDir":"${sourceDir}/out/build/host-linux"},
-  {"name":"host-windows","generator":"Ninja","binaryDir":"${sourceDir}/out/build/host-windows"},
-  {"name":"wsl","inherits":"host-linux","binaryDir":"${sourceDir}/out/build/wsl","cacheVariables":{"BUILD_DEVICE":"ON"}}
+  {"name":"host-linux","generator":"Ninja","binaryDir":"${sourceDir}/build/cmake/host-linux"},
+  {"name":"host-windows","generator":"Ninja","binaryDir":"${sourceDir}/build/cmake/host-windows"},
+  {"name":"wsl","inherits":"host-linux","binaryDir":"${sourceDir}/build/cmake/wsl","cacheVariables":{"BUILD_DEVICE":"ON"}}
  ],
  "buildPresets": [
   {"name":"host-linux","configurePreset":"host-linux"},

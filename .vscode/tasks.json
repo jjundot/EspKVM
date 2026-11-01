@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cmake: configure",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--preset", "host-linux"],
+      "windows": {
+        "args": ["--preset", "host-windows"]
+      },
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "build",
+      "detail": "Configure and build the host; protobuf generation runs automatically.",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "host-linux"],
+      "windows": {
+        "args": ["--build", "--preset", "host-windows"]
+      },
+      "dependsOn": ["cmake: configure"],
+      "dependsOrder": "sequence",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "rebuild",
+      "detail": "Configure, clean, then regenerate protobuf and rebuild the host.",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "host-linux", "--clean-first"],
+      "windows": {
+        "args": ["--build", "--preset", "host-windows", "--clean-first"]
+      },
+      "dependsOn": ["cmake: configure"],
+      "dependsOrder": "sequence",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}
