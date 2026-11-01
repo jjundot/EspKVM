@@ -1,0 +1,13 @@
+{
+ "version": 6,
+ "configurePresets": [
+  {"name":"host-linux","generator":"Ninja","binaryDir":"${sourceDir}/out/build/host-linux"},
+  {"name":"host-windows","generator":"Ninja","binaryDir":"${sourceDir}/out/build/host-windows"},
+  {"name":"wsl","inherits":"host-linux","binaryDir":"${sourceDir}/out/build/wsl","cacheVariables":{"BUILD_DEVICE":"ON"}}
+ ],
+ "buildPresets": [
+  {"name":"host-linux","configurePreset":"host-linux"},
+  {"name":"host-windows","configurePreset":"host-windows"},
+  {"name":"wsl","configurePreset":"wsl"}
+ ]
+}

@@ -1,0 +1,30 @@
+name: Host and shared protocol
+on: [push, pull_request]
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: sources/host/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/requirements-proto.txt
+      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - run: cmake -S . -B out/build/ci -G Ninja
+      - run: cmake --build out/build/ci --target host test-host test-protocol
+      - name: No-change and schema dependency rebuild
+        shell: bash
+        run: |
+          cmake --build out/build/ci --target proto
+          python -c "from pathlib import Path; Path('sources/protocol/ek.options').touch()"
+          cmake --build out/build/ci --target proto host

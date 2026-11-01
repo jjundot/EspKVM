@@ -1,0 +1,11 @@
+ek.Challenge.nonce_d  max_size:16  fixed_length:true
+ek.Challenge.mac      max_size:6   fixed_length:true
+ek.Challenge.name     max_size:32
+ek.Auth.nonce_c       max_size:16  fixed_length:true
+ek.Auth.hmac          max_size:32  fixed_length:true
+ek.AuthOk.hmac        max_size:32  fixed_length:true
+ek.Config.name        max_size:32
+ek.Config.ssid        max_size:33
+ek.Config.password    max_size:65
+ek.Config.psk         max_size:16
+ek.SerialInfo.mac     max_size:6 fixed_length:true

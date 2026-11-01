@@ -1,0 +1,10 @@
+
+ref/
+tmp/
+out/
+sources/host/internal/protocol/pb/*.pb.go
+sources/device/build/
+sources/device/managed_components/
+sources/device/sdkconfig
+__pycache__/
+.venv/

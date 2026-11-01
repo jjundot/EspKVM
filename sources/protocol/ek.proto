@@ -1,0 +1,108 @@
+syntax = "proto3";
+package ek;
+option go_package = "github.com/jjun/esp-kvm/internal/protocol/pb";
+
+message Empty {}
+
+// 握手(明文)
+message Challenge {
+  uint32 proto_ver = 1;
+  bytes  nonce_d   = 2;   // 16B
+  uint32 fw_ver    = 3;   // 0x00MMmmpp
+  bytes  mac       = 4;   // 6B
+  bool   paired    = 5;
+  string name      = 6;
+}
+message Auth     { bytes nonce_c = 1; bytes hmac = 2; }  // 16B, 32B
+message AuthOk   { bytes hmac = 1; }                     // 32B
+message AuthFail { uint32 reason = 1; }
+
+// 输入(加密)
+message KbState {
+  uint32  mods    = 1;   // bit0..7: LCtrl,LShift,LAlt,LGui,RCtrl,RShift,RAlt,RGui
+  fixed64 keys_lo = 2;   // bit n = HID Usage n (0..63)
+  fixed64 keys_hi = 3;   // bit n = HID Usage 64+n (64..127)
+  fixed64 keys_128_191 = 4;
+  fixed64 keys_192_255 = 5; // 0xE0..0xE7 只通过 mods 表示,此处必须为 0
+}
+message Mouse {
+  uint32 buttons = 1;    // bit0..4: L,R,M,Back,Forward
+  sint32 dx      = 2;
+  sint32 dy      = 3;
+  sint32 wheel   = 4;
+  sint32 hwheel  = 5;
+}
+message Consumer { uint32 usage = 1; } // 完整状态:0=释放;初版最多同时一个 Consumer Usage
+
+// 状态与配置(加密)
+message Status {
+  uint32 fw_ver      = 1;
+  uint32 uptime_s    = 2;
+  bool   usb_mounted = 3;
+  uint32 kb_leds     = 4;   // bit0 Num, bit1 Caps, bit2 Scroll
+  sint32 rssi        = 5;
+}
+message Config {
+  string name     = 1;
+  string ssid     = 2;
+  string password = 3;
+  bytes  psk      = 4;   // 空 = 不修改;CFG_DATA 返回时恒为空
+  uint32 usb_vid  = 5;
+  uint32 usb_pid  = 6;
+  uint32 ip       = 7;   // 数值形式: 192.168.1.10 = 0xC0A8010A
+  uint32 gw       = 8;
+  uint32 mask     = 9;
+  uint32 tcp_port = 10;
+}
+
+message ConfigResult {
+  uint32 code = 1; // 0=已持久化,1=非法字段,2=存储失败,3=忙
+  uint32 field = 2; // 非法字段的 Config 字段号,0=无
+}
+
+// 串口信封:与 TCP Msg 分开,复用配置消息,不开放输入控制
+message SerialInfo {
+  uint32 fw_ver = 1;
+  bytes mac = 2; // 6B
+  bool paired = 3;
+  Config config = 4; // psk/password 恒为空
+}
+message SerialAck {
+  uint32 code = 1; // 0=成功,1=不支持版本,2=非法请求,3=存储失败,4=忙
+}
+message SerialPacket {
+  uint32 proto_ver = 1; // 1
+  reserved 2; // request_id 统一放在 ek_hdr_t.seq,不在 body 重复存储
+  oneof body {
+    Empty info_get = 16;
+    SerialInfo info = 17;
+    Config cfg_set = 18;
+    ConfigResult cfg_result = 19;
+    Empty reboot = 20;
+    Empty factory_reset = 21;
+    SerialAck ack = 22;
+  }
+}
+
+message Msg {
+  oneof body {
+    Challenge challenge = 1;
+    Auth      auth      = 2;
+    AuthOk    auth_ok   = 3;
+    AuthFail  auth_fail = 4;
+
+    KbState   kb          = 16;
+    Mouse     mouse       = 17;
+    Consumer  consumer    = 18;
+    Empty     release_all = 19;
+
+    Empty     heartbeat = 32;
+    Status    status    = 33;
+
+    Empty     cfg_get   = 48;
+    Config    cfg_data  = 49;
+    Config    cfg_set   = 50;   // 完整替换;只有空 psk 表示保留
+    Empty     reboot    = 51;
+    ConfigResult cfg_result = 52;
+  }
+}
