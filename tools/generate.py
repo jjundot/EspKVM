@@ -33,7 +33,7 @@ def main():
     for package, version in expected.items():
         if importlib.metadata.version(package) != version:
             raise RuntimeError('incorrect generator dependency version: ' + package)
-    with lock(ROOT / 'build' / ('proto-' + kind + '.lock')):
+    with lock(ROOT / 'build' / ('host' if kind == 'go' else 'device') / 'proto.lock'):
         with tempfile.TemporaryDirectory(dir=dest) as tmp:
             args = [sys.executable, '-m', 'grpc_tools.protoc', '-I' + str(ROOT / 'sources/protocol')]
             if kind == 'go':

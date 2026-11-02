@@ -1,5 +1,7 @@
 # ESP32 键鼠共享器:设计决议汇总 (v10)
 
+> **2026-11-01 修订**：[硬件优先与设计修订](design-review-2026-11-01.md) 覆盖本文的 Linux LOCAL 常驻抓取、单握手槽拒绝接管、敏感字段完整替换、Empty 心跳、UI token 分发及 SDK 基线。以下线格式仍是当前可构建的 v1 草案；M1/最小 M0 后集中更新 schema 和协议版本，尚未冻结为发布协议。
+
 > 本文为实施基线,替代 v9。v10 将串口与 TCP 统一为 Magic + length 的同一 12 字节帧头,串口使用 CRC32,移除 COBS;协议版本为 `proto_ver = 1`,实现前按本版生成协议文件。性能与 BIOS 兼容性仍须实机验证,不作为已验证承诺。
 
 ## 1. 项目目标
@@ -23,9 +25,9 @@
 | 项目 | 决议 |
 |---|---|
 | 主控芯片 | **ESP32-S3**(原生 USB OTG)。经典 ESP32 / C3 / C6 不能做 USB HID 设备 |
-| 固件 SDK | **ESP-IDF v5.2+** + `esp_tinyusb`,不用 Arduino |
+| 固件 SDK | **ESP-IDF 6.0.3 + esp_tinyusb 3.0.0**，固定版本，先验证 M1；5.2 分支已 EOL |
 | 开发环境 | **WSL2 编译**(工程放 WSL ext4 内,不放 `/mnt/c`),**Windows 烧录/调试** |
-| 客户端语言 | **Go**(Win/Linux 分平台构建验证,标准库 HTTP,WebSocket 使用独立依赖并锁定版本,`go:embed` 打包前端) |
+| 客户端语言 | **Go**(Win/Linux 分平台构建验证，标准库 HTTP + SSE/POST，`go:embed` 打包前端) |
 | 客户端界面 | Web UI,仅监听 `127.0.0.1:62626` |
 | 网络 | 仅 WiFi **Station** 模式,**固定 IP**,无 SoftAP、无 DHCP |
 | 传输 | **单 TCP 端口**(默认 24800)。无 UDP、无发现、无扫描 |

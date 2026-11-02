@@ -1,0 +1,17 @@
+menu "HID hardware bring-up"
+config HID_TEST_BUTTON_GPIO
+    int "Arm/mode button GPIO"
+    range 0 48
+    default 0
+config HID_TEST_FORCE_6KRO
+    bool "Default to standard 6KRO descriptors"
+    default n
+config HID_TEST_USB_VID
+    hex "USB vendor ID (must be authorized for your use)"
+    range 0x0000 0xffff
+    default 0x046d
+config HID_TEST_USB_PID
+    hex "USB product ID"
+    range 0x0000 0xffff
+    default 0xc52b
+endmenu

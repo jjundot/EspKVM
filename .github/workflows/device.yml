@@ -7,14 +7,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.2.3
+          esp_idf_version: v6.0.3
           target: esp32s3
           command: |
             python -m venv build/tools/proto
             build/tools/proto/bin/python -m pip install -r tools/requirements-proto.txt
-            mkdir -p build/deps
-            git clone --depth 1 --branch 0.4.9.1 https://github.com/nanopb/nanopb.git build/deps/nanopb
-            test "$(git -C build/deps/nanopb rev-parse HEAD)" = cad3c18ef15a663e30e3e43e3a752b66378adec1
+            mkdir -p build/device/deps
+            git clone --depth 1 --branch 0.4.9.1 https://github.com/nanopb/nanopb.git build/device/deps/nanopb
+            test "$(git -C build/device/deps/nanopb rev-parse HEAD)" = cad3c18ef15a663e30e3e43e3a752b66378adec1
             export PATH="$PWD/build/tools/proto/bin:$PATH"
-            cmake -S . -B build/cmake/device -G Ninja -DBUILD_HOST=OFF -DBUILD_DEVICE=ON -DPython3_EXECUTABLE="$PWD/build/tools/proto/bin/python"
-            cmake --build build/cmake/device --target package-device test-protocol
+            cmake -S . -B build/device/cmake -G Ninja -DBUILD_HOST=OFF -DBUILD_DEVICE=ON -DPython3_EXECUTABLE="$PWD/build/tools/proto/bin/python"
+            cmake --build build/device/cmake --target package-device test-protocol
+            cmake --build build/device/cmake --target package-hid-selftest

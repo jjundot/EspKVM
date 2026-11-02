@@ -1,13 +1,21 @@
 {
- "version": 6,
- "configurePresets": [
-  {"name":"host-linux","generator":"Ninja","binaryDir":"${sourceDir}/build/cmake/host-linux"},
-  {"name":"host-windows","generator":"Ninja","binaryDir":"${sourceDir}/build/cmake/host-windows"},
-  {"name":"wsl","inherits":"host-linux","binaryDir":"${sourceDir}/build/cmake/wsl","cacheVariables":{"BUILD_DEVICE":"ON"}}
- ],
- "buildPresets": [
-  {"name":"host-linux","configurePreset":"host-linux"},
-  {"name":"host-windows","configurePreset":"host-windows"},
-  {"name":"wsl","configurePreset":"wsl"}
- ]
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "host",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host/cmake",
+      "cacheVariables": { "BUILD_HOST": "ON", "BUILD_DEVICE": "OFF" }
+    },
+    {
+      "name": "device",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/device/cmake",
+      "cacheVariables": { "BUILD_HOST": "OFF", "BUILD_DEVICE": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "host", "configurePreset": "host", "targets": ["host"] },
+    { "name": "device", "configurePreset": "device", "targets": ["hid-selftest"] }
+  ]
 }

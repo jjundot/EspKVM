@@ -8,3 +8,4 @@ sources/device/managed_components/
 sources/device/sdkconfig
 __pycache__/
 .venv/
+experiments/*/managed_components/

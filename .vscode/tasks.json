@@ -2,48 +2,46 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "cmake: configure",
-      "type": "process",
-      "command": "cmake",
-      "args": ["--preset", "host-linux"],
-      "windows": {
-        "args": ["--preset", "host-windows"]
-      },
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": [],
-      "presentation": { "reveal": "silent", "panel": "shared" }
-    },
-    {
       "label": "build",
-      "detail": "Configure and build the host; protobuf generation runs automatically.",
+      "identifier": "espkvm.build",
       "type": "process",
-      "command": "cmake",
-      "args": ["--build", "--preset", "host-linux"],
+      "command": "/bin/bash",
+      "args": ["scripts/wsl/build.sh", "build", "${input:target}"],
       "windows": {
-        "args": ["--build", "--preset", "host-windows"]
+        "command": "${env:SystemRoot}\\System32\\wsl.exe",
+        "args": ["--exec", "bash", "scripts/wsl/build.sh", "build", "${input:target}"]
       },
-      "dependsOn": ["cmake: configure"],
-      "dependsOrder": "sequence",
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$gcc"],
-      "presentation": { "reveal": "always", "panel": "shared" }
+      "presentation": { "panel": "new", "reveal": "always" }
     },
     {
       "label": "rebuild",
-      "detail": "Configure, clean, then regenerate protobuf and rebuild the host.",
+      "identifier": "espkvm.rebuild",
       "type": "process",
-      "command": "cmake",
-      "args": ["--build", "--preset", "host-linux", "--clean-first"],
+      "command": "/bin/bash",
+      "args": ["scripts/wsl/build.sh", "rebuild", "${input:target}"],
       "windows": {
-        "args": ["--build", "--preset", "host-windows", "--clean-first"]
+        "command": "${env:SystemRoot}\\System32\\wsl.exe",
+        "args": ["--exec", "bash", "scripts/wsl/build.sh", "rebuild", "${input:target}"]
       },
-      "dependsOn": ["cmake: configure"],
-      "dependsOrder": "sequence",
       "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "problemMatcher": ["$gcc"],
-      "presentation": { "reveal": "always", "panel": "shared" }
+      "presentation": { "panel": "new", "reveal": "always" }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "target",
+      "type": "pickString",
+      "description": "选择构建目标",
+      "options": [
+        { "label": "Device", "value": "device" },
+        { "label": "Host", "value": "host" }
+      ],
+      "default": "device"
     }
   ]
 }

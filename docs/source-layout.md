@@ -1,6 +1,6 @@
 # 源码目录与 WSL 开发约定
 
-本文规定实施时的目录边界。协议行为以 [设计决议](esp32-kvm-decisions.md) 为准;目录及构建产物位置以本文为准。以下为规划,目录和命令随实现创建,不是已存在的工具链。
+本文规定实施时的目录边界。协议行为以 [设计决议](esp32-kvm-decisions.md) 及其 [2026-11-01 修订](design-review-2026-11-01.md) 为准；冲突时采用修订。目录及构建产物位置以本文为准。以下包含规划，未落地部分以实施状态为准。
 
 ## 仓库结构
 
@@ -84,11 +84,20 @@ EspKVM/
 ├── experiments/
 │   ├── windows-input/            # M0 平台验证,不被正式程序依赖
 │   └── linux-input/
-└── build/                          # 所有可重建产物,不提交
-    ├── device/                   # IDF build 与生成的 C 协议文件
-    ├── cmake/                    # 根 CMake/Ninja 构建目录
-    ├── bin/                      # 客户端/CLI 可执行文件
-    └── flash/                    # 自包含固件烧录包
+└── build/                        # 所有可重建产物,不提交
+    ├── host/
+    │   ├── cmake/                # 客户端 CMake/Ninja
+    │   └── bin/
+    │       ├── windows/          # Windows amd64 可执行文件
+    │       └── linux/            # Linux amd64 可执行文件
+    ├── device/
+    │   ├── cmake/                # 设备 CMake 编排
+    │   ├── firmware/             # IDF 配网固件及生成的 C 协议
+    │   ├── hid-selftest/          # 独立 M1 IDF 构建
+    │   ├── config/               # 重建保留的配置
+    │   ├── deps/                 # 固件第三方源码
+    │   └── flash/                # firmware/、hid-selftest/ 烧录包
+    └── tools/                    # 共用生成工具
 ```
 
 固件各组件按需采用 `include/`、`src/`、`test/` 结构。Go 测试放在被测包旁,不要建立重复客户端源码的顶层 tests 树。需要实机的验收单独标记,不能让普通单元测试依赖串口或管理员权限。
@@ -118,19 +127,20 @@ EspKVM/
 - CI 从干净工作副本执行 CMake configure + Ninja,验证首次构建、无变更构建、修改 proto/options 后重新生成及并行依赖;再执行 C/Go 字节向量测试。生成结果不提交,不再采用“检查已提交生成代码漂移”的流程。
 - build/、生成的 Go 文件、managed_components、机器 sdkconfig 和工具虚拟环境忽略;sdkconfig.defaults、依赖锁文件及协议输入提交。ref/、tmp/ 维持本地参考用途,不作为构建依赖。
 
-计划提供以下构建入口;预设、目标和脚本在实施阶段创建:
+仅保留按产物命名的 `host`、`device` 两个预设；运行平台由构建入口处理，不再作为预设名称：
 
 | 入口 | 用途 |
 |---|---|
-| cmake --preset wsl | 配置根 Ninja 构建,build/cmake/wsl |
-| cmake --build --preset wsl --target proto | 自动生成两端协议代码,包含必要的 IDF 子构建配置 |
-| cmake --build --preset wsl --target host | 先生成 Go 协议,再构建 Linux 程序与 CLI |
-| cmake --build --preset wsl --target device | IDF 子构建先生成 C 协议,再编译固件 |
-| cmake --build --preset wsl --target test-host test-protocol | 自动生成协议后运行非硬件测试 |
-| cmake --build --preset wsl --target package-device | 构建设备固件并生成 build/flash 自包含烧录包 |
-| cmake --preset host-windows | Windows 原生 Ninja/Go 构建预设,无需 IDF |
+| cmake --preset host | 配置客户端构建，build/host/cmake，无需 IDF |
+| cmake --build --preset host | 自动生成 Go 协议并编译客户端工具 |
+| cmake --build --preset host --target test-host test-protocol | 运行非硬件测试 |
+| cmake --preset device | 配置设备构建，build/device/cmake，无需 Go |
+| cmake --build --preset device | 当前阶段默认构建独立 M1 HID 测试固件 |
+| cmake --build --preset device --target device | 自动生成 nanopb C 协议并编译配网固件 |
+| cmake --build --preset device --target package-device | 打包配网固件到 build/device/flash/firmware |
+| cmake --build --preset device --target package-hid-selftest | 打包 M1 固件到 build/device/flash/hid-selftest |
 
-构建预设使用仓库相对路径,通过 CMake 自身源码目录定位 sources/,不依赖调用者 cwd。若 host 依赖支持纯 Go 交叉编译,再提供 WSL 到 Windows 的独立预设;含 CGO 则使用 Windows runner/本机。交叉编译成功不能替代 Windows 输入行为验证。
+构建预设使用仓库相对路径,通过 CMake 自身源码目录定位 sources/,不依赖调用者 cwd。纯 Go 的 Windows 交叉编译由入口设置 GOOS/GOARCH，不增加平台预设；含 CGO 则使用 Windows runner/本机。交叉编译成功不能替代 Windows 输入行为验证。
 
 ## Windows 与 WSL 的衔接
 
