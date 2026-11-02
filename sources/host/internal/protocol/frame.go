@@ -127,7 +127,9 @@ func (p *SerialParser) Feed(b []byte, now time.Time) []SerialFrame {
 	out := p.poll(now)
 	for _, v := range b {
 		if p.n == len(p.data) {
-			panic("serial parser invariant")
+			copy(p.data[:], p.data[1:])
+			copy(p.arrived[:], p.arrived[1:])
+			p.n--
 		}
 		p.data[p.n] = v
 		p.arrived[p.n] = now

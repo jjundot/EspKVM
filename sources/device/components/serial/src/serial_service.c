@@ -1,5 +1,8 @@
 #include "serial_service.h"
 #include "config_store.h"
+#include "ek_crypto.h"
+#include "ek_versions.h"
+#include "hid_service.h"
 #include "driver/uart.h"
 #include "esp_mac.h"
 #include "esp_system.h"
@@ -11,27 +14,34 @@
 #include "pb_encode.h"
 static serial_parser parser;
 static ek_SerialPacket request, response;
+static void clear_request(void) {
+    volatile unsigned char *p = (volatile unsigned char *)&request;
+    for (size_t i = 0; i < sizeof(request); i++) p[i] = 0;
+}
 static uint8_t rx[128], tx[528];
 static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *ctx) {
     (void)ctx;
     request = (ek_SerialPacket)ek_SerialPacket_init_zero;
     pb_istream_t input = pb_istream_from_buffer(body, n);
-    if (!pb_decode(&input, ek_SerialPacket_fields, &request) || !request.which_body)
+    if (!pb_decode(&input, ek_SerialPacket_fields, &request) || !request.which_body) {
+        clear_request();
         return;
+    }
     response = (ek_SerialPacket)ek_SerialPacket_init_zero;
-    response.proto_ver = 1;
+    response.proto_ver = EK_PROTO_VERSION;
     response.which_body = ek_SerialPacket_ack_tag;
     bool reboot = false;
-    if (request.proto_ver != 1)
+    if (request.proto_ver != EK_PROTO_VERSION)
         response.body.ack.code = 1;
     else
         switch (request.which_body) {
         case ek_SerialPacket_info_get_tag:
             response.which_body = ek_SerialPacket_info_tag;
-            response.body.info.fw_ver = 0x000100;
+            response.body.info.fw_ver = EK_FW_VERSION;
             response.body.info.has_config = true;
             response.body.info.paired = config_get(&response.body.info.config, true);
-            esp_read_mac(response.body.info.mac, ESP_MAC_WIFI_STA);
+            response.body.info.mac.size = 6;
+            esp_read_mac(response.body.info.mac.bytes, ESP_MAC_WIFI_STA);
             break;
         case ek_SerialPacket_cfg_set_tag:
             response.which_body = ek_SerialPacket_cfg_result_tag;
@@ -51,6 +61,8 @@ static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *
             response.body.ack.code = 2;
             break;
         }
+    if (reboot) hid_release();
+    clear_request();
     pb_ostream_t output = pb_ostream_from_buffer(tx + 12, 512);
     if (!pb_encode(&output, ek_SerialPacket_fields, &response))
         return;
@@ -63,8 +75,9 @@ static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *
         tx[total + i] = (uint8_t)(crc >> (8 * i));
     uart_write_bytes(UART_NUM_0, tx, total + 4);
     uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(200));
-    if (reboot)
+    if (reboot) {
         esp_restart();
+    }
 }
 static void task(void *ctx) {
     (void)ctx;
@@ -72,6 +85,7 @@ static void task(void *ctx) {
         int n = uart_read_bytes(UART_NUM_0, rx, sizeof(rx), pdMS_TO_TICKS(20));
         serial_parser_feed(&parser, rx, n > 0 ? (size_t)n : 0,
                            (uint64_t)(esp_timer_get_time() / 1000), request_received, NULL);
+        ek_zero(rx,sizeof(rx));
     }
 }
 esp_err_t serial_service_start(void) {

@@ -1,8 +1,6 @@
-# ESP32 键鼠共享器:设计决议汇总 (v10)
+# ESP32 键鼠共享器:设计决议汇总 (v11)
 
-> **2026-11-01 修订**：[硬件优先与设计修订](design-review-2026-11-01.md) 覆盖本文的 Linux LOCAL 常驻抓取、单握手槽拒绝接管、敏感字段完整替换、Empty 心跳、UI token 分发及 SDK 基线。以下线格式仍是当前可构建的 v1 草案；M1/最小 M0 后集中更新 schema 和协议版本，尚未冻结为发布协议。
-
-> 本文为实施基线,替代 v9。v10 将串口与 TCP 统一为 Magic + length 的同一 12 字节帧头,串口使用 CRC32,移除 COBS;协议版本为 `proto_ver = 1`,实现前按本版生成协议文件。性能与 BIOS 兼容性仍须实机验证,不作为已验证承诺。
+> 本文是唯一实施基线，替代 v10 及 2026-11-01 修订。线格式以 `sources/protocol/ek.proto` 和 `ek.options` 为准，协议版本为 2；禁止降级。v2 的代码与向量验收不代替 M1/M0 实机验收，发布协议尚未冻结。
 
 ## 1. 项目目标
 
@@ -69,7 +67,7 @@ ek_hdr_t | Protobuf(SerialPacket)[len] | CRC32_LE[4]
 
 串口 flags 必须恰为 EK_FLAG_CRC(0x02),不加密。CRC 使用 CRC-32/ISO-HDLC(IEEE),反射多项式 0xEDB88320、init/xorout 均为 0xFFFFFFFF,校验字符串 123456789 的结果为 0xCBF43926。CRC 覆盖原始 12 字节头及 body,以 4 字节小端附后;len 不包含 CRC。body 最大 512 字节,整帧最大 528 字节。CRC 检测损坏,不提供认证或加密;串口仍以本机 USB 物理访问可信为安全边界。
 
-串口 header.seq 用作 request_id,非零递增,应答原样回填;它不使用 TCP 的每方向严格递增校验,不作为加密 nonce。SerialPacket 不重复存 request_id。客户端最多一个请求在途,只接受当前 seq 的预期应答或错误 ack;打开端口时清空接收缓存并随机选择非零起始 seq,之后递增,到 UINT32_MAX 后关闭并重新打开。request_id 只关联应答,不提供持久去重或 exactly-once 保证。proto_ver 必须为 1。允许消息:
+串口 header.seq 用作 request_id,非零递增,应答原样回填;它不使用 TCP 的每方向严格递增校验,不作为加密 nonce。SerialPacket 不重复存 request_id。客户端最多一个请求在途,只接受当前 seq 的预期应答或错误 ack;打开端口时清空接收缓存并随机选择非零起始 seq,之后递增,到 UINT32_MAX 后关闭并重新打开。request_id 只关联应答,不提供持久去重或 exactly-once 保证。proto_ver 必须为 2。允许消息:
 
 | 请求 | 应答 | 行为 |
 |---|---|---|
@@ -84,11 +82,13 @@ ek_hdr_t | Protobuf(SerialPacket)[len] | CRC32_LE[4]
 
 ### 4.2 客户端串口配网流程
 
-选择串口 → info_get 获取默认/现有脱敏配置 → 填写完整配置(含 WiFi 密码) → 生成随机 16 字节 PSK(crypto/rand) → 原子保存 pending 记录 → cfg_set → cfg_result 成功后等待自动重启 → 使用新 IP/PSK 完成 TCP 认证并核对非敏感配置 → 标记 ready。串口库使用 go.bug.st/serial。
+选择串口 → info_get 获取默认/现有脱敏配置 → 填写非敏感完整配置及首次必需的凭据 → 生成随机 16 字节 PSK(crypto/rand) → 原子保存 pending 记录 → cfg_set → cfg_result 成功后等待自动重启 → 使用新 IP/PSK 完成 TCP 认证并核对非敏感配置 → 标记 ready。串口库使用 go.bug.st/serial。
 
 应答丢失时保留旧配置和 pending 新配置,先尝试新 TCP 认证或重新读取串口状态,不得重新生成 PSK、自动恢复出厂或覆盖旧设备记录。串口请求总等待期限为 3 s,超时只代表结果未知;串口传输完成不等于持久化成功。
 
 ### 4.3 网络参数
+
+未配对 info 默认值：名称 EspKVM，IP 192.168.1.200，网关 192.168.1.1，掩码 255.255.255.0，端口 24800；SSID 为空，VID/PID 为 0，凭据不存在。首次配置必须填写合法网络参数及具有合法使用依据的 VID/PID，默认值不表示可直接启用 USB。
 
 - 固件使用 `esp_netif_dhcpc_stop` + `esp_netif_set_ip_info` 设置静态 IP。
 - `esp_wifi_set_ps(WIFI_PS_NONE)` 关闭省电;TCP 开启 `TCP_NODELAY` 与 keepalive;固定信道更佳。
@@ -97,10 +97,13 @@ ek_hdr_t | Protobuf(SerialPacket)[len] | CRC32_LE[4]
 
 ### 4.4 会话规则
 
-- **同一时刻只允许一个已认证会话**。已有会话时,新连接收到 `Challenge` 后直接关闭,**不踢掉**已认证会话。
-- 未认证连接从 accept 起总超时 2 s,不因收到零碎字节延长。最多一个握手中的连接;监听处理不得阻塞活动会话。
-- 心跳每 1 s 一次(双向),**3 s 无完整且认证有效的帧视为断线**。独立单调时钟看门狗触发释放,不依赖 `recv_exact` 返回;零碎字节、无效帧不能续期。TCP keepalive 仅为辅助。
-- 未配对(`paired=0`)的设备拒绝一切输入帧。
+- 保留一个活动会话，允许三个有界握手上下文；每个 accept 起固定总期限 2s，另有单帧期限。accept 不等待网络认证或 USB。
+- 限制来源并发和失败频率、全局握手资源预算，满槽立即拒绝；三个槽能缓解串行占槽，不能消除局域网 DoS，更不能用按 IP 限流声称解决多源攻击。
+- 只在 PSK 认证成功后进入串行接管仲裁。使旧 session/generation 失效、停止旧输入、触发高优先级释放屏障，再启用新会话；USB 不能交付释放时保持 pending-release，新会话不得输入。未经认证的新连接不影响旧会话。
+- 自动重连可替换同一客户端实例/owner 的半开会话；不同 owner 的接管必须是显式用户意图。新版本握手应将 owner 和接管意图绑定到认证证明，不能接受未认证的元数据决定接管。
+- 被替换连接尽量收到认证的原因通知后关闭；收到通知的客户端回 LOCAL 并停止自动接管。通知丢失时自动重连也不得无条件抢占别的 owner，避免两个合法客户端互相踢下线。
+
+- 心跳双向每 1 s 一次，独立看门狗在最后完整认证有效帧 3 s 后断开并触发释放；碎片、无效帧不能续期。未配对设备不开放输入。
 
 ## 5. 协议
 
@@ -156,7 +159,7 @@ typedef struct {
 
 头部逐字段读写,不得直接传输 C struct 的内存表示。握手 flags 必须恰为 0、seq 恰为 0;认证后 flags 必须恰为 1,未知 flag 位直接拒绝。单帧从首字节起的读取期限为 1 s,另受握手总期限及 3 s 会话期限约束。
 
-`Msg.body` 必须存在,方向和阶段必须合法:设备先发 Challenge,客户端只回 Auth,设备只回 AuthOk/AuthFail;客户端验证 AuthOk 后才发送加密消息。认证后 C→D 允许输入、release_all、heartbeat、cfg_get、cfg_set、reboot;D→C 允许 heartbeat、status、cfg_data、cfg_result。解码失败、空 body、未知消息类型、非法方向或越界值均断开并释放;已知消息内的未知字段可忽略。nonce、HMAC、MAC 必须验证精确长度,缺失字段不能用全零值代替有效数据。协议版本不等于 1 时拒绝,不自动降级。
+`Msg.body` 必须存在,方向和阶段必须合法:设备先发 Challenge,客户端只回 Auth,设备只回 AuthOk/AuthFail;客户端验证 AuthOk 后才发送加密消息。认证后 C→D 允许输入、release_all、heartbeat、cfg_get、cfg_set、reboot;D→C 允许 heartbeat、status、cfg_data、cfg_result、session_end(reason=1)、released(id)。解码失败、空 body、未知消息类型、非法方向或越界值均断开并释放;已知消息内的未知字段可忽略。nonce、HMAC、MAC 必须验证精确长度,缺失字段不能用全零值代替有效数据。协议版本不等于 2 时拒绝,不自动降级。
 
 **不做 magic 重同步**:TCP 可靠有序,错位只可能是 bug 或恶意流量,一律断开重连。Magic 的作用是快速识别非本协议流量并便于抓包调试。握手前 magic 错误的连接,直接关闭、不回数据。粘包靠"一次只读一个头加一个 body"处理,客户端读端需套 `bufio.Reader`。
 
@@ -174,13 +177,15 @@ typedef struct {
 
 ```
 1. D→C  Challenge{ nonce_d[16], proto_ver, fw_ver, mac, paired, name }   明文, seq=0
-2. C→D  Auth{ nonce_c[16], hmac[32] }                                     明文, seq=0
-        hmac  = HMAC-SHA256(PSK, "EK-AUTH-C" | transcript_hash | nonce_c)
+2. C→D  Auth{ nonce_c[16], hmac[32], owner[16], takeover }                                     明文, seq=0
+        hmac  = HMAC-SHA256(PSK, "EK-AUTH-C" | auth_context | nonce_c)
 3. D→C  AuthOk{ hmac[32] }                                                明文, seq=0
-        hmac2 = HMAC-SHA256(PSK, "EK-AUTH-D" | transcript_hash | nonce_c)
-4. 双方派生:key = HMAC-SHA256(PSK, "EK-KEY" | transcript_hash | nonce_c)[0:16]
+        hmac2 = HMAC-SHA256(PSK, "EK-AUTH-D" | auth_context | nonce_c)
+4. 双方派生:key = HMAC-SHA256(PSK, "EK-KEY" | auth_context | nonce_c)[0:16]
 5. 此后所有帧 flags.bit0=1,使用 AES-128-GCM,每方向 seq 从 0 开始
 ```
+
+`auth_context = SHA256("EK-AUTH-V2" || transcript_hash[32] || owner[16] || takeover[1])`，takeover 编码为 0 或 1。owner 为客户端进程实例随机 16B，自动重连保持不变；更换 owner 的抢占须显式授权。三个认证标签及会话密钥统一使用 auth_context，任何 owner/意图篡改均认证失败。
 
 `transcript_hash = SHA256(Challenge 帧的原始 12 字节头 || 原始 body)`;双方保留原始字节,禁止重新序列化后计算。字符串标签为 ASCII,不含 NUL;hash 为 32 字节,nonce_c 为 16 字节,拼接无歧义。这样版本、设备元数据和 nonce_d 均被认证绑定。元数据在 AuthOk 校验成功前只作“不可信”展示。PSK 始终为随机 16 字节。本握手不提供前向保密,PSK 泄露后历史抓包也可能被解密。
 
@@ -196,143 +201,29 @@ typedef struct {
 
 > **安全边界**:首次配网的 PSK 经串口明文写入(本机 USB 线上,可接受)。握手包中的设备名、MAC、固件版本为明文,不涉及密钥。
 
-### 5.4 ek.proto
+### 5.4 Schema 与生成约束
 
-```proto
-syntax = "proto3";
-package ek;
+共享定义只保留在 [ek.proto](../sources/protocol/ek.proto) 和 [ek.options](../sources/protocol/ek.options)，禁止复制一份 schema 到设计文档。版本为 2，生成目标及固定工具链见 CMake。nonce/HMAC/MAC/owner 使用有长度的字节数组，逐字段检查精确长度，拒绝缺失字段。
 
-message Empty {}
+新 schema 使用 `optional string password` / `optional bytes psk`：缺省表示保留；显式空 password 表示开放网络；显式 PSK 必须恰为 16B，显式空 PSK 拒绝。首次配置必须提供这两个字段（开放网络提供存在的空 password），不得从脱敏快照凭空补零。
 
-// 握手(明文)
-message Challenge {
-  uint32 proto_ver = 1;
-  bytes  nonce_d   = 2;   // 16B
-  uint32 fw_ver    = 3;   // 0x00MMmmpp
-  bytes  mac       = 4;   // 6B
-  bool   paired    = 5;
-  string name      = 6;
-}
-message Auth     { bytes nonce_c = 1; bytes hmac = 2; }  // 16B, 32B
-message AuthOk   { bytes hmac = 1; }                     // 32B
-message AuthFail { uint32 reason = 1; }
+非敏感字段继续完整快照替换。服务在锁内把缺省敏感字段与活动配置合并，再统一校验和原子保存。CFG_DATA/info 不返回这两个 optional 字段，不用“存在的空值”伪装脱敏。修改名称不再要求重新填写密码。pending 比对要忽略敏感字段的存在性，并继续保留改 PSK 前后的候选凭据。
 
-// 输入(加密)
-message KbState {
-  uint32  mods    = 1;   // bit0..7: LCtrl,LShift,LAlt,LGui,RCtrl,RShift,RAlt,RGui
-  fixed64 keys_lo = 2;   // bit n = HID Usage n (0..63)
-  fixed64 keys_hi = 3;   // bit n = HID Usage 64+n (64..127)
-  fixed64 keys_128_191 = 4;
-  fixed64 keys_192_255 = 5; // 0xE0..0xE7 只通过 mods 表示,此处必须为 0
-}
-message Mouse {
-  uint32 buttons = 1;    // bit0..4: L,R,M,Back,Forward
-  sint32 dx      = 2;
-  sint32 dy      = 3;
-  sint32 wheel   = 4;
-  sint32 hwheel  = 5;
-}
-message Consumer { uint32 usage = 1; } // 完整状态:0=释放;初版最多同时一个 Consumer Usage
+新消息使用 `Heartbeat { uint32 id; bool reply; }`。每方向独立生成非零 id；请求 `reply=false`，对端只回一次相同 id、`reply=true`，响应不再回显。每方向最多一个在途探测；未知/重复/过期响应不形成 RTT 样本，连接更换后丢弃旧探测。
 
-// 状态与配置(加密)
-message Status {
-  uint32 fw_ver      = 1;
-  uint32 uptime_s    = 2;
-  bool   usb_mounted = 3;
-  uint32 kb_leds     = 4;   // bit0 Num, bit1 Caps, bit2 Scroll
-  sint32 rssi        = 5;
-}
-message Config {
-  string name     = 1;
-  string ssid     = 2;
-  string password = 3;
-  bytes  psk      = 4;   // 空 = 不修改;CFG_DATA 返回时恒为空
-  uint32 usb_vid  = 5;
-  uint32 usb_pid  = 6;
-  uint32 ip       = 7;   // 数值形式: 192.168.1.10 = 0xC0A8010A
-  uint32 gw       = 8;
-  uint32 mask     = 9;
-  uint32 tcp_port = 10;
-}
-
-message ConfigResult {
-  uint32 code = 1; // 0=已持久化,1=非法字段,2=存储失败,3=忙
-  uint32 field = 2; // 非法字段的 Config 字段号,0=无
-}
-
-// 串口信封:与 TCP Msg 分开,复用配置消息,不开放输入控制
-message SerialInfo {
-  uint32 fw_ver = 1;
-  bytes mac = 2; // 6B
-  bool paired = 3;
-  Config config = 4; // psk/password 恒为空
-}
-message SerialAck {
-  uint32 code = 1; // 0=成功,1=不支持版本,2=非法请求,3=存储失败,4=忙
-}
-message SerialPacket {
-  uint32 proto_ver = 1; // 1
-  reserved 2; // request_id 统一放在 ek_hdr_t.seq,不在 body 重复存储
-  oneof body {
-    Empty info_get = 16;
-    SerialInfo info = 17;
-    Config cfg_set = 18;
-    ConfigResult cfg_result = 19;
-    Empty reboot = 20;
-    Empty factory_reset = 21;
-    SerialAck ack = 22;
-  }
-}
-
-message Msg {
-  oneof body {
-    Challenge challenge = 1;
-    Auth      auth      = 2;
-    AuthOk    auth_ok   = 3;
-    AuthFail  auth_fail = 4;
-
-    KbState   kb          = 16;
-    Mouse     mouse       = 17;
-    Consumer  consumer    = 18;
-    Empty     release_all = 19;
-
-    Empty     heartbeat = 32;
-    Status    status    = 33;
-
-    Empty     cfg_get   = 48;
-    Config    cfg_data  = 49;
-    Config    cfg_set   = 50;   // 完整替换;只有空 psk 表示保留
-    Empty     reboot    = 51;
-    ConfigResult cfg_result = 52;
-  }
-}
-```
-
-### 5.5 ek.options(nanopb)
-
-```
-ek.Challenge.nonce_d  max_size:16  fixed_length:true
-ek.Challenge.mac      max_size:6   fixed_length:true
-ek.Challenge.name     max_size:32
-ek.Auth.nonce_c       max_size:16  fixed_length:true
-ek.Auth.hmac          max_size:32  fixed_length:true
-ek.AuthOk.hmac        max_size:32  fixed_length:true
-ek.Config.name        max_size:32
-ek.Config.ssid        max_size:33
-ek.Config.password    max_size:65
-ek.Config.psk         max_size:16
-ek.SerialInfo.mac     max_size:6 fixed_length:true
-```
+RTT 从 writer 开始发送探测到收到并认证匹配响应，用单调时钟计量，记录样本数、窗口和 p50/p95/p99。它包括网络/两端调度，**不是输入→受控机事件延迟，也不是 USB 完成确认**。第 11.1 节端到端基线仍须目标机观测、可对齐时钟或外部采集，独立报告。
 
 ### 5.6 Protobuf 使用要点
+
+ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回绕。设备可把连续请求合并到更强的同一 USB 屏障，但必须分别确认所有 id；控制等待者上限 128。只有三个接口的全释放报告均完成后才能发送 Released。客户端从调用起最多等待 500 ms，超时关闭会话并唤醒全部等待者；未知或重复 Released 视为非法消息。500 ms 是待实测确认的初始安全边界。未挂载 USB 时不得确认成功，重挂后先完成 pending-release。
 
 - 固件用 **nanopb**,禁用 callback 字段与动态分配;`Msg` 与收发缓冲区按任务/会话独占静态分配,不放任务栈;禁止跨任务共享可变解码对象。
 - proto3 零值不编码:键盘全释放编码为空 `KbState`,解码得到全 0,语义正确。
 - 键位图用四个 `fixed64`,覆盖 0..255;0..3 保留位及 0xE0..0xE7 对应位必须为零。mods 只允许低 8 位,鼠标 buttons 只允许低 5 位。Consumer Usage 使用实现公布的支持列表,不支持项不转发。
 - 有符号数一律 `sint32`(ZigZag),负的 `dx/dy` 只占 1~2 字节。
-- `psk` 不设 `fixed_length`:解码后判断 `size == 0 || size == 16`。
+- 凭据存在性按 5.4 节处理；存在的 PSK 必须 16B，缺省保留；首次必须同时提供 password 和 PSK。
 - 鼠标四轴内部用 `int64` 累加并检查加法溢出;每帧每轴限制在 ±1000000,越界拒绝。发送协议时分段为合法 sint32 值,发送 HID 时按描述符范围分段,只扣除已成功提交的量。
-- `Empty` 消息在 `oneof` 中保留存在性,用于 `heartbeat` / `release_all` 等。
+- `Empty` 在 `oneof` 中保留存在性，用于 cfg_get/reboot；Heartbeat、ReleaseAll 和 Released 必须具有非零 id。
 
 ## 6. 固件设计
 
@@ -344,13 +235,13 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 | `serial_task` | 共享帧头/CRC/SerialPacket 解析、配置/重启/恢复出厂,复用配置服务 |
 | `tcp_task` | Accept、握手、GCM、nanopb 解码、入队 |
 | `hid_task` | 维护键盘/鼠标状态,合并鼠标 delta,按 USB 轮询节拍发送 HID 报告 |
-| NVS | WiFi 凭据、IP、端口、名称、PSK、USB VID/PID |
+| NVS | WiFi 凭据、IP、端口、名称、PSK、USB VID/PID、six_kro |
 
 行为要点:
 
 - **安全释放**:TCP 断开、心跳超时、队列溢出、USB 卸载、收到 `release_all` 时执行第 6.1 节释放屏障,覆盖键盘、鼠标和 Consumer。
 - 认证前收到加密类消息,或加密后收到握手类消息,一律断开。
-- 支持 `CFG_SET` 完整替换配置(空 `psk` 表示不改),按第 6.2 节提交后重启。
+- 支持 CFG_SET 非敏感字段完整快照替换，缺省凭据保留，按第 6.2 节提交后重启。
 - 可选:RGB LED 指示状态,BOOT 键恢复出厂。
 
 ### 6.1 USB 交付与释放屏障
@@ -363,8 +254,8 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 
 ### 6.2 配置事务
 
-- CFG_SET 完整替换所有非 PSK 字段,零值不是“不修改”;只有 psk 长度 0 表示保留。客户端先 CFG_GET 后编辑完整快照;开放网络使用空 password。设备返回 CFG_DATA 时 psk 恒为空,密码默认脱敏;客户端必须要求用户重新填写密码后才能提交完整替换,不得把脱敏值当作真实密码写回。
-- 校验名称 UTF-8 最多 31 字节、SSID 1..32 字节、密码为空或 8..63 字节口令或 64 位十六进制值、PSK 0/16 字节、端口 1..65535、VID/PID 1..65535、连续掩码及主机/网关地址合法性。所有字段先校验,失败不改变活动或持久配置。USB VID/PID 只能采用有合法使用依据的值。
+- CFG_SET 完整替换非敏感字段。optional password/psk 缺省时在同一事务锁内保留活动值；显式空 password 是开放网络，显式空 PSK 拒绝。读取时两个字段均不出现。首次须同时提供凭据。
+- 校验名称 UTF-8 最多 31 字节、SSID 1..32 字节、密码为空或 8..63 字节口令或 64 位十六进制值、PSK 存在时 16 字节、端口 1..65535、VID/PID 1..65535、连续掩码及主机/网关地址合法性。所有字段先校验,失败不改变活动或持久配置。USB VID/PID 只能采用有合法使用依据的值。
 - 同时只允许一个配置事务,串口与 TCP 共用互斥锁。候选配置以带版本和校验的单个 NVS blob 保存,采用双槽及递增版本号;完整写入并 commit 后才作为有效版本,启动选择最新完整有效槽。断电不能产生字段混合。
 - 提交成功后先触发输入释放,发送 CFG_RESULT(code=0),等待发送完成或最多 200 ms 后重启;失败返回错误且不重启。客户端每会话最多一个 CFG_SET 在途,不自动重发,不允许切换后仍给旧连接写配置。
 - 客户端发送前原子落盘旧配置与 pending 新配置;应答丢失或连接断开不等于失败。尝试新 IP/PSK 并认证,读取非敏感配置核对后标为 ready;失败时保留两份候选供恢复,不无界循环改配置。CFG_RESULT 成功只代表持久化成功,不代表新 WiFi 一定可达;错误网络参数通过串口恢复。
@@ -378,13 +269,14 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 | 平台 | 捕获 | 拦截 |
 |---|---|---|
 | Windows | Raw Input + LL 钩子(线程 `LockOSThread` 并跑消息循环) | 钩子回调返回 1 吞掉事件;远程模式下 `ClipCursor` 锁定本机光标。钩子回调中**只入队,不做网络 IO** |
-| Linux | `/dev/input/event*` | 正常运行时 `EVIOCGRAB` 独占物理设备,本地模式通过 `uinput` 回注,异常时解除抓取 |
+| Linux | `/dev/input/event*`，LOCAL 被动读取 | 仅 REMOTE 使用 EVIOCGRAB，进入时全释放边界抓取；失败/退出立即解除 |
 
-限制:Windows 涉及完整性级别和安全桌面的行为必须分场景验证,远程控制管理权限窗口时按需提权;不承诺拦截 `Ctrl+Alt+Del`、`Win+L`。Linux 需要输入设备和 `/dev/uinput` 权限(提供最小权限 udev 规则与安装脚本)。
+限制:Windows 涉及完整性级别和安全桌面的行为必须分场景验证,远程控制管理权限窗口时按需提权;不承诺拦截 `Ctrl+Alt+Del`、`Win+L`。Linux 正常转发只需要选定 evdev 设备的权限；uinput 只在另行启用的修复/实验场景申请，不作为普通输入通路。
 
 - Windows 钩子必须同步决定吞放,不能先交给异步 dispatcher 再决定。钩子线程维护最小路由/热键状态,按事件序号与 dispatcher 衔接,回调只非阻塞入队。键盘和按钮以钩子为唯一来源,Raw Input 只取相对位移及滚轮,避免双计数;验证低级钩子吞键后 Raw Input 的实际可用性。回注带自定义标记并排除,避免递归;退出、会话锁定或切换桌面时撤销 ClipCursor 并回 LOCAL。
 - Linux 按 SYN_REPORT 处理批次,EV_KEY value=2 不重复改变状态;监听热插拔、排除本程序 uinput 设备、处理 SYN_DROPPED 并通过 EVIOCG* 重建状态。回注设备声明所需能力及 SYN_REPORT。多个物理设备同按一个键时使用每设备状态与引用计数,拔出设备释放其贡献。
-- Linux LOCAL 仍抓取并回注,“回退本机”不等于正常运行时关闭 EVIOCGRAB。回注失败、输入队列溢出或退出时关闭抓取 FD;进程崩溃后物理设备恢复本地输入,虚拟设备销毁。
+- Linux LOCAL 不抓取、不回注。正常进入远程须物理全释放，在批次边界抓取并重读状态；任一失败撤销所有抓取。故障立即解除抓取。LOCAL 已到桌面的输入不能用另一个 uinput 设备撤销；LOCAL 可能看到整个热键组合。
+- 正常回 LOCAL 先确认远程释放，优先等物理键/按钮全释放的批次边界再解除抓取，dispatcher 仍处理输入。故障、取消或退出立即解除，不为等待物理释放延误本机恢复。恢复时可能出现物理保持键的后续原生事件，抑制集合不承诺过滤 Linux LOCAL 的桌面输入。
 
 ### 7.2 发送策略
 
@@ -417,9 +309,9 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 唯一 dispatcher 串行处理输入和切换,拥有目标、物理状态、已转发状态、鼠标累加量及 generation。步骤如下:
 
 1. 增加 generation,进入切换抑制状态;将当前按住的键/按钮加入抑制集合,保留物理状态,清除待发送位移。切换期间新按下的键/按钮也加入集合,不把旧拖拽或修饰键继承到新目标。
-2. 旧目标为本机时,通过 SendInput/uinput 补发其已收到的键、按钮释放。旧目标为远程时,writer 丢弃未开始编码的旧代输入并优先写 release_all;在途 Write 不能撤回,必须在其 100 ms 期限内完成,随后发送释放,失败则关闭连接。dispatcher 异步接收结果,仍能处理输入或取消。
-3. 旧目标释放帧写出或连接已关闭后再提交新目标。写出不等于 USB 已释放;网络故障下旧设备可能保持按键直到 3 s 看门狗到期,界面不得显示“已确认释放”。故障回退 LOCAL 不等待旧网络写入完成,立即撤销 ClipCursor 和远程吞键模式。
-4. 新远程目标须再次检查就绪状态,先由其 writer 写 release_all 再开放当前代输入,失败回 LOCAL。远程到远程期间保持本机输入拦截,不回注本机。
+2. 旧目标为 Windows 本机时，通过 SendInput 补发其已收到的键、按钮释放；Linux LOCAL 则等待物理全释放边界抓取，不用 uinput 撤销原生桌面输入。旧目标为远程时,writer 丢弃未开始编码的旧代输入并优先写 release_all;在途 Write 不能撤回,必须在其 100 ms 期限内完成,随后发送释放,失败则关闭连接。dispatcher 异步接收结果,仍能处理输入或取消。
+3. 正常切换等待对应 Released{id}（三个接口的全释放均已完成），失败时关闭旧连接后继续。仅写出不等于 USB 已释放；网络故障下旧设备可能保持按键直到 3 s 看门狗到期，界面保留“释放未确认”的警告。故障回退 LOCAL 不等待旧网络写入，立即撤销 ClipCursor 和远程吞键模式。
+4. 新远程目标须再次检查就绪状态，先由其 writer 写 ReleaseAll{id} 并收到匹配的 Released{id}，再开放当前代输入，失败回 LOCAL。远程到远程期间保持本机输入拦截，不回注本机。
 5. 切换完成后允许新的普通输入,抑制集合中的输入仍等待各自释放;热键切换还须等组合键全部释放。任何切换来源均执行同样的状态清理。
 
 每条排队输入带本地 generation 和会话实例标识,writer 编码前再次验证,旧代数据或旧连接回调不得污染新会话。每设备保留独立 Conn、GCM、seq、缓冲区和队列。切换请求串行执行,进行中只保留最后一个用户目标请求;LOCAL/故障回退优先取消远程切换。
@@ -428,13 +320,17 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 
 ## 9. Web UI 与安全
 
-- 仅绑定 `127.0.0.1:62626`,前端静态资源 `go:embed`。
-- **绑定回环地址不足以防护**,必须:校验 `Host` 为 `127.0.0.1:62626`;校验 `Origin`;启动时生成随机 token,所有写操作和 WebSocket 都要携带。
-- 功能:设备列表(添加/删除/启用/禁用/拖动排序)、热键设置、设备配置读写、串口配网、状态面板(在线状态、USB 枚举状态、RSSI、最后有效帧距今时间、键盘 LED)。当前 Empty 心跳不能测量 RTT,不显示伪造的 RTT 指标。
-- 多设备:显示**当前控制目标**(LOCAL 或某台设备)并高亮;每台设备提供"切换到此设备"按钮(与热键等效,走同一个 dispatcher);轮换顺序可视化;活动设备断线回退时给出提示。
-- 本地配置文件中设备为数组:`id`、`name`、`ip`、`port`、`psk`、`enabled`;顺序即轮换顺序。
-- 客户端配置文件含 PSK:Linux 文件权限 `0600`、目录 `0700`;Windows 放 `%APPDATA%` 下并设置仅当前用户及系统可读写的 ACL。临时文件和 pending 备份沿用同样权限,使用原子替换,日志不输出敏感字段。
-- Origin 精确匹配 `http://127.0.0.1:62626`,拒绝跨源及 null Origin 的写请求/WS;无 Origin 的本地工具请求仍必须提供 token。token 由同源初始页面获取,不放 URL 或日志,不启用宽泛 CORS。敏感读取接口也要求 token,GET 无副作用。
+- 仅绑定 `127.0.0.1:62626`，静态资源 go:embed。
+
+改为 SSE 状态推送 + POST 操作，不引入 WebSocket 依赖。SSE 只发脱敏状态，限制事件长度/客户端数，并处理断线恢复；POST 仍做 Host、Origin 和 CSRF 校验。
+
+不再允许任何访问初始页面的进程直接取得写 token。启动生成短时、一次性的启动凭据；以 URL fragment 交给当前用户浏览器，页面立即清除 fragment，并通过同源 POST 换取随机 HttpOnly、SameSite=Strict、Path=/ 的会话 cookie。启动凭据只用一次且过期，不进入 query、日志或普通页面响应。cookie 不取代写请求的精确 Origin/CSRF 防护。
+
+该模型缓解其他本地用户直接 curl 页面取得权限；不是同一 OS 用户下恶意进程的隔离边界，也不把浏览器命令行/历史/扩展视作秘密保险箱。多用户部署仍须每用户私有凭据及启动通道，必要时使用 OS 认证 IPC。
+
+- 精确校验 Host 与写请求 Origin，cookie 及 CSRF 均须验证；拒绝 null/缺省 Origin 的写请求。GET 无副作用；敏感读取和 SSE 须 cookie 与 CSRF 请求头；CSRF 只从启动交换获取并放在同源 sessionStorage，不能凭 cookie 重新领取。SSE 用 fetch 流读取，不把凭据放入 query；不启用宽泛 CORS。
+- 功能：设备管理与排序、统一切换、热键录入、串口配网及 pending 查询/丢弃、设备配置、脱敏状态与 RTT 指标。
+- 本地凭据文件 Linux 0600/目录0700；Windows 当前用户与系统 ACL；原子替换并持有稳定 sidecar 跨进程锁。pending 同样保护，日志不输出凭据。
 
 ## 10. 开发环境与流程
 
@@ -442,7 +338,7 @@ ek.SerialInfo.mac     max_size:6 fixed_length:true
 
 ```
 WSL2 (Ubuntu 22.04/24.04)
- ├─ ESP-IDF v5.2+(~/esp)   idf.py build → build/*.bin、flash_args
+ ├─ ESP-IDF v6.0.3 + esp_tinyusb 3.0.0   idf.py build → build/*.bin、flash_args
  ├─ CMake/Ninja 自动调用 nanopb + protoc 生成 ek.pb.c/h
  └─ Go 工具链(CMake/Ninja 自动生成 ek.pb.go 后构建 host)
 
@@ -460,6 +356,16 @@ Windows
 - 实机联调在本地进行,日志与报错贴回对话定位。
 
 ## 11. 里程碑
+
+顺序改为：USB 三接口测试固件 → 最小 Windows 钩子/Raw Input 实验及 Linux 模式切换实验 → 实机敲字/恢复本机输入 → 冻结新协议 → 会话与完整客户端。普通编译不代替 Windows/Linux/BIOS 实机验收。
+
+M1 使用独立 `experiments/usb-hid` 工程，不开放 UART 输入注入，不依赖 WiFi 或网络协议。构建目标 `hid-selftest` / `rebuild-hid-selftest`，烧录包目标 `package-hid-selftest`。报告编码器放在 `sources/device/components/hid_reports` 供复用；实验中的单生产者同步提交不是正式固件的 FIFO、任务间并发或会话释放屏障实现。
+
+持久化键盘兼容模式。强制模式同时使用标准 Boot Keyboard 报告描述符和 8B 报告，即使主机不发 SET_PROTOCOL 也保持 6KRO；不能只把 NKRO 描述符对应的报告缩成 8B。普通键超过六个时报告 ErrorRollOver。模式修改后重新枚举/重启。
+
+M1 的模式保存在独立 `hid_test` NVS 命名空间，长按测试按钮切换并重启。正式 Config 使用 six_kro 字段；实验的 hid_test 命名空间不作为正式配置。
+
+
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
@@ -486,7 +392,7 @@ Windows
 | 平台恢复 | Windows 注入事件不递归,锁屏/桌面切换后恢复本机;Linux SYN_DROPPED、设备拔插、多键盘同键、进程退出后无持续卡键 |
 | 配置事务 | 非法配置不落盘;保存中断电保留完整旧或新配置;应答丢失及改 IP/PSK 可通过 pending 记录恢复;错误 WiFi 可串口救援 |
 | USB 兼容性 | 报告模式/Boot 模式切换、6 键溢出、LED、多媒体键、卸载重枚举,以及目标 Windows/Linux/BIOS 实机通过 |
-| 本地 UI 安全 | 错误 Host/Origin、缺失 token、跨源 WebSocket、敏感未授权读取均拒绝;日志无 PSK/密码 |
+| 本地 UI 安全 | 错误 Host/Origin、缺失 cookie/CSRF、跨源 POST/SSE、敏感未授权读取均拒绝;日志无 PSK/密码 |
 
 性能报告记录输入到受控机事件的 p50/p95/p99、测试时长、丢转换数、队列峰值及 WiFi 条件;先建立实测基线再冻结延迟指标,不能把 1 ms 发送节拍当作端到端延迟。
 
@@ -503,8 +409,6 @@ Windows
 9. **多设备切换时的卡键**:遵守第 8 节统一切换屏障;首个 Ctrl 可见的限制见 8.1。
 10. **活动设备断线**:一律回退 LOCAL,不要停留在"无人接收"的远程状态,否则本机输入会被独占却无处可去。
 
-## 13. 下一步
+## 13. 实施追踪
 
-1. 完成 M0 平台实验,并从本文输出 `ek.proto` / `ek.options` / `protocol.h` 及 CMake/Ninja 自动生成规则、跨语言协议向量。
-2. 固件工程:`CMakeLists.txt`、`idf_component.yml`、`sdkconfig.defaults`、TinyUSB 复合 HID 描述符、串口 Protobuf 配网、静态 IP WiFi STA、TCP Server + 握手 + GCM + nanopb + `hid_task`。
-3. Go 客户端:协议层 → 输入捕获与热键 → Web UI。
+本文及 schema 是唯一行为基线。实现进度见 [实施状态](implementation-status.md)，实机和性能验收见 [验收记录](validation-2026-11-02.md)。自动测试、编译、台架和目标机实测分别记录，未采集的数据不视为通过。

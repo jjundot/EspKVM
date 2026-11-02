@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/jjun/esp-kvm/internal/protocol"
-	"github.com/jjun/esp-kvm/internal/protocol/pb"
-	"github.com/jjun/esp-kvm/internal/session"
+	"github.com/jjundot/EspKVM/internal/protocol"
+	"github.com/jjundot/EspKVM/internal/protocol/pb"
+	"github.com/jjundot/EspKVM/internal/session"
 	"google.golang.org/protobuf/proto"
 	"net"
 	"strconv"
@@ -24,6 +24,10 @@ func ipv4(n uint32) string { return net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8
 func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) error {
 	if id == "" || candidate == nil {
 		return errors.New("device id and full config required")
+	}
+	token, e := NewPSK()
+	if e != nil {
+		return e
 	}
 	candidate = proto.Clone(candidate).(*pb.Config)
 	reply, e := c.Request(&pb.SerialPacket{Body: &pb.SerialPacket_InfoGet{InfoGet: &pb.Empty{}}})
@@ -52,17 +56,20 @@ func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) er
 			}
 		}
 		key := hex.EncodeToString(candidate.Psk)
-		if len(candidate.Psk) == 0 {
+		if candidate.Psk == nil {
 			if old == nil {
 				return errors.New("existing PSK unavailable; supply new PSK")
 			}
 			key = old.PSK
 		}
 		next := Device{ID: id, Name: candidate.Name, IP: ipv4(candidate.Ip), Port: uint16(candidate.TcpPort), PSK: key, Enabled: true}
+		if old != nil {
+			next.Enabled = old.Enabled
+		}
 		snapshot := proto.Clone(candidate).(*pb.Config)
-		snapshot.Password = ""
+		snapshot.Password = nil
 		snapshot.Psk = nil
-		d.Pending = append(d.Pending, Pending{Old: old, New: next, State: "unknown", Expected: snapshot})
+		d.Pending = append(d.Pending, Pending{Token: token, Old: old, New: next, State: "unknown", Expected: snapshot})
 		return nil
 	})
 	if e != nil {
@@ -75,6 +82,12 @@ func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) er
 	result := reply.GetCfgResult()
 	if result == nil {
 		return protocol.ErrFrame
+	}
+	if result.Code == 1 || result.Code == 3 {
+		if e := s.discardPending(id, &token); e != nil {
+			return fmt.Errorf("configuration rejected (code %d); clearing pending: %w", result.Code, e)
+		}
+		return fmt.Errorf("configuration rejected (code %d, field %d); pending cleared", result.Code, result.Field)
 	}
 	if result.Code != 0 {
 		return fmt.Errorf("configuration rejected (code %d, field %d); pending retained", result.Code, result.Field)
@@ -91,6 +104,12 @@ func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) er
 
 // Verify makes one bounded authentication/read attempt; never retries CFG_SET.
 func (s *Store) Verify(ctx context.Context, id string) error {
+	return s.verify(ctx, id, nil)
+}
+func (s *Store) VerifyWithOptions(ctx context.Context, id string, options session.Options) error {
+	return s.verify(ctx, id, &options)
+}
+func (s *Store) verify(ctx context.Context, id string, options *session.Options) error {
 	d, e := s.Load()
 	if e != nil {
 		return e
@@ -109,7 +128,14 @@ func (s *Store) Verify(ctx context.Context, id string) error {
 	if e != nil {
 		return e
 	}
-	conn, e := session.Dial(ctx, net.JoinHostPort(p.New.IP, strconv.Itoa(int(p.New.Port))), key)
+	var conn *session.Session
+	address := net.JoinHostPort(p.New.IP, strconv.Itoa(int(p.New.Port)))
+	if options == nil {
+		conn, e = session.Dial(ctx, address, key)
+	} else {
+		conn, e = session.DialWithOptions(ctx, address, key, *options)
+	}
+	clear(key)
 	if e != nil {
 		return e
 	}
@@ -131,17 +157,32 @@ func (s *Store) Verify(ctx context.Context, id string) error {
 	if e = conn.Send(&pb.Msg{Body: &pb.Msg_CfgGet{CfgGet: &pb.Empty{}}}, 0, false); e != nil {
 		return e
 	}
+	var actual *pb.Config
 	select {
 	case <-runCtx.Done():
 		return runCtx.Err()
 	case e = <-done:
-		return e
-	case actual := <-received:
-		if p.Expected == nil || !proto.Equal(actual, p.Expected) {
-			return errors.New("device config does not match pending candidate")
+		select {
+		case actual = <-received:
+		default:
+			return e
 		}
+	case actual = <-received:
+	}
+	if p.Expected == nil || !proto.Equal(actual, p.Expected) {
+		return errors.New("device config does not match pending candidate")
 	}
 	return s.Update(func(d *Data) error {
+		found := false
+		for _, current := range d.Pending {
+			if current.New.ID == id && current.Token == p.Token {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("pending transaction changed during verification")
+		}
 		replaced := false
 		for i, v := range d.Devices {
 			if v.ID == id {
@@ -160,5 +201,22 @@ func (s *Store) Verify(ctx context.Context, id string) error {
 			}
 		}
 		return nil
+	})
+}
+
+// DiscardPending removes local recovery data; it never changes the device.
+func (s *Store) DiscardPending(id string) error { return s.discardPending(id, nil) }
+func (s *Store) discardPending(id string, token *string) error {
+	if id == "" {
+		return errors.New("device id required")
+	}
+	return s.Update(func(d *Data) error {
+		for i, p := range d.Pending {
+			if p.New.ID == id && (token == nil || p.Token == *token) {
+				d.Pending = append(d.Pending[:i], d.Pending[i+1:]...)
+				return nil
+			}
+		}
+		return errors.New("no pending transaction")
 	})
 }

@@ -23,9 +23,9 @@ try {
         $offsets[$entry.offset] = $true
         if ([IO.Path]::GetFileName($entry.file) -ne $entry.file -or $entry.file -notmatch '^[a-zA-Z0-9_.-]+\.bin$') { throw 'Unsafe package filename' }
         $source = Join-Path $packageRoot $entry.file
-        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ine $entry.sha256) { throw 'Firmware SHA256 mismatch' }
         $destination = Join-Path $staging $entry.file
         Copy-Item -LiteralPath $source -Destination $destination
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $destination).Hash -ine $entry.sha256) { throw 'Firmware SHA256 mismatch' }
         $arguments += @($entry.offset, $destination)
     }
     & $Python @arguments

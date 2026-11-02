@@ -1,7 +1,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/../../../../cmake/Protocol.cmake")
 set(generated "${CMAKE_BINARY_DIR}/generated/protocol")
 if(CMAKE_BUILD_EARLY_EXPANSION)
- idf_component_register(REQUIRES)
+ idf_component_register(REQUIRES mbedtls)
  return()
 endif()
 file(MAKE_DIRECTORY "${generated}")
@@ -10,7 +10,7 @@ set(nanopb "${PROJECT_ROOT}/build/device/deps/nanopb")
 if(NOT EXISTS "${nanopb}/pb_decode.c")
  message(FATAL_ERROR "Run scripts/wsl/bootstrap.sh to prepare pinned nanopb runtime")
 endif()
-idf_component_register(SRCS src/frame.c "${generated}/ek.pb.c"
+idf_component_register(SRCS src/frame.c src/message_validate.c src/ek_crypto.c "${generated}/ek.pb.c"
  "${nanopb}/pb_common.c" "${nanopb}/pb_encode.c" "${nanopb}/pb_decode.c"
- INCLUDE_DIRS include "${generated}" "${nanopb}")
+ INCLUDE_DIRS include "${generated}" "${nanopb}" REQUIRES mbedtls)
 add_dependencies(${COMPONENT_LIB} proto-c)

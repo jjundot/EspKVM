@@ -17,19 +17,19 @@ build/
 │       └── linux/               # ELF
 ├── device/
 │   ├── cmake/
-│   ├── firmware/                # 配网固件 IDF 输出
+│   ├── firmware/                # 正式固件 IDF 输出
 │   ├── hid-selftest/            # M1 固件 IDF 输出
 │   ├── config/                  # rebuild 保留的配置
 │   ├── deps/
 │   └── flash/
-│       ├── firmware/            # 配网烧录包
+│       ├── firmware/            # 正式固件烧录包
 │       └── hid-selftest/        # M1 烧录包
 └── tools/
 ```
 
-**当前为协议与串口配网阶段，还不能进行完整键鼠共享。** 详细范围和未完项见 [实施状态](docs/implementation-status.md)。现有固件应用只启动串口配网。
+**当前为协议 v2 候选与集成验收阶段，尚未完成发布验收。** 正式固件已接入 WiFi/TCP/认证/GCM/HID；常驻客户端与安全 API 已实现，Web UI 前端仍待完成。详细范围见 [实施状态](docs/implementation-status.md) 和 [验收记录](docs/validation-2026-11-02.md)。未配对固件只启动 UART 配网。
 
-当前优先做 [M1 USB 硬件实验](experiments/usb-hid/README.md) 和 [最小 Windows M0](experiments/windows-input/README.md)，暂不冻结协议。[2026-11-01 设计修订](docs/design-review-2026-11-01.md) 记录 Linux LOCAL 被动读取、认证接管、optional 凭据、带 id 的心跳、6KRO 和 UI 会话方案。
+唯一设计基线为 [v11 决议](docs/esp32-kvm-decisions.md)。优先完成 [M1 USB 实验](experiments/usb-hid/README.md)、[Windows M0](experiments/windows-input/README.md) 和 [Linux M0](experiments/linux-input/README.md) 的真实硬件验收，再冻结协议。VID/PID 默认 0，必须提供合法标识。
 
 ## WSL host 构建
 
@@ -63,15 +63,17 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 build/host/bin/linux/espkvmctl ports
 build/host/bin/linux/espkvmctl -serial /dev/ttyUSB0 info
 build/host/bin/linux/espkvmctl -serial /dev/ttyUSB0 -id desk -config device.json serial-set
+build/host/bin/linux/espkvmctl pending-list
+build/host/bin/linux/espkvmctl -id desk pending-discard
 build/host/bin/linux/espkvmctl -id desk verify
 build/host/bin/linux/espkvmctl -address 192.168.1.10:24800 -psk-file secret.hex check
 ```
 
-参数放在子命令前。完整配置 JSON 遵循 `sources/protocol/ek.proto` 的 protobuf JSON 映射；必须重新填写 WiFi 密码，PSK 为 base64 的 16B 随机值。配置请求前会原子保存 pending 凭据；应答丢失保留 pending，不自动重发。`verify` 用新凭据认证并比对脱敏配置；当前固件尚未实现 TCP，需待后续固件集成后使用。
+参数放在子命令前。完整配置 JSON 遵循 `sources/protocol/ek.proto` 的 protobuf JSON 映射；首次配置须同时提供 password（开放网络显式空字符串）及 base64 的 16B 随机 PSK；已配对时缺省两字段表示保留，显式空 PSK 拒绝。配置请求前会原子保存 pending 凭据；应答丢失保留 pending，不自动重发。`verify` 用新凭据认证并比对脱敏配置；TCP 服务已实现，仍需真实设备互通验收。
 
 默认凭据文件：Linux 用户配置目录下 `EspKVM/config.json`（文件 0600，目录 0700）；Windows `%APPDATA%/EspKVM/config.json`（当前用户和 SYSTEM 的 ACL）。日志不输出凭据。
 
-## 固件配网引导
+## 固件（未配对时仅 UART）
 
 准备 ESP-IDF **v6.0.3** 并运行其 `export.sh`，先运行 bootstrap 获取固定 nanopb runtime。然后：
 
@@ -88,6 +90,12 @@ cmake --build --preset device --target device
 ./scripts/windows/flash.ps1 -Package '\\wsl.localhost\Ubuntu-26.04\home\user\src\EspKVM\build\device\flash\firmware\<包目录>' -Port COM3
 ```
 
-烧录脚本先验证 manifest 和每个文件的 SHA256，再把包复制到 Windows 临时目录调用 esptool。
+烧录脚本先验证 manifest，复制到 Windows 临时目录后检查复制文件的 SHA256，全部匹配才调用 esptool。
 
 硬件验收需要双 USB 的 ESP32-S3 开发板及 Windows/Linux/BIOS 目标机；普通测试不访问串口或抓取真实键鼠。
+
+## 本机 C/Go 互通与 Linux 安装
+
+设置 EK_PSA_SOURCE 为已锁定 ESP-IDF 的 components/mbedtls/mbedtls/tf-psa-crypto 目录，CMake test-protocol 会增加 nanopb/PSA 向量、NVS 模型、同源 C TCP 与 Go 的互通测试。Linux 可加 -DEK_SANITIZERS=ON 检查便携 C 核心。原始 Protobuf/GCM 向量用 node tools/generate_vectors.cjs 生成；测试不连接真实设备。
+
+Linux 构建后，可审阅并执行 sudo bash packaging/linux/install.sh USER，安装两个二进制及仅对专用 espkvm 组开放输入设备的 udev 规则；重新登录后生效。卸载用 sudo bash packaging/linux/uninstall.sh，不删除用户凭据。不默认安装常驻系统服务，客户端在用户桌面会话运行。

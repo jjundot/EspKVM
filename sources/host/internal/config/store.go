@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/jjun/esp-kvm/internal/protocol/pb"
+	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,6 +21,7 @@ type Device struct {
 	Enabled bool   `json:"enabled"`
 }
 type Pending struct {
+	Token    string     `json:"transaction"`
 	Old      *Device    `json:"old,omitempty"`
 	New      Device     `json:"new"`
 	State    string     `json:"state"`
@@ -32,8 +33,9 @@ type Data struct {
 	Pending []Pending `json:"pending"`
 }
 type Store struct {
-	mu   sync.Mutex
-	path string
+	mu      sync.Mutex
+	path    string
+	secured bool
 }
 
 func Open(path string) *Store { return &Store{path: path} }
@@ -49,7 +51,16 @@ func NewPSK() (string, error) {
 	_, e := rand.Read(b)
 	return hex.EncodeToString(b), e
 }
-func (s *Store) Load() (Data, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.load() }
+func (s *Store) Load() (Data, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, e := s.lockFile()
+	if e != nil {
+		return Data{}, e
+	}
+	defer unlock()
+	return s.load()
+}
 func (s *Store) load() (Data, error) {
 	b, e := os.ReadFile(s.path)
 	if os.IsNotExist(e) {
@@ -65,6 +76,11 @@ func (s *Store) load() (Data, error) {
 func (s *Store) Update(fn func(*Data) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, e := s.lockFile()
+	if e != nil {
+		return e
+	}
+	defer unlock()
 	d, e := s.load()
 	if e != nil {
 		return e
@@ -119,4 +135,23 @@ func (s *Store) save(d Data) error {
 		return e
 	}
 	return syncDir(dir)
+}
+
+// Lock a stable sidecar because saving atomically replaces the config inode.
+func (s *Store) lockFile() (func(), error) {
+	if !s.secured {
+		if e := secureDir(filepath.Dir(s.path)); e != nil {
+			return nil, e
+		}
+		s.secured = true
+	}
+	f, e := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return nil, e
+	}
+	if e = lockHandle(f); e != nil {
+		f.Close()
+		return nil, e
+	}
+	return func() { f.Close() }, nil
 }

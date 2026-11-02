@@ -3,9 +3,11 @@ package protocol
 import (
 	"encoding/hex"
 	"errors"
-	"github.com/jjun/esp-kvm/internal/protocol/pb"
+	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"unicode/utf8"
 )
+
+const Version = 2
 
 func ValidateConfig(c *pb.Config, paired bool) (uint32, error) {
 	bad := func(f uint32) (uint32, error) { return f, errors.New("invalid configuration field") }
@@ -18,15 +20,19 @@ func ValidateConfig(c *pb.Config, paired bool) (uint32, error) {
 	if len(c.Ssid) < 1 || len(c.Ssid) > 32 || !utf8.ValidString(c.Ssid) {
 		return bad(2)
 	}
-	if len(c.Password) != 0 && (len(c.Password) < 8 || len(c.Password) > 63) {
-		if len(c.Password) != 64 {
+	if !paired && c.Password == nil {
+		return bad(3)
+	}
+	password := c.GetPassword()
+	if len(password) != 0 && (len(password) < 8 || len(password) > 63) {
+		if len(password) != 64 {
 			return bad(3)
 		}
-		if _, e := hex.DecodeString(c.Password); e != nil {
+		if _, e := hex.DecodeString(password); e != nil {
 			return bad(3)
 		}
 	}
-	if len(c.Psk) != 16 && (!paired || len(c.Psk) != 0) {
+	if (c.Psk != nil && len(c.Psk) != 16) || (!paired && c.Psk == nil) {
 		return bad(4)
 	}
 	if c.UsbVid == 0 || c.UsbVid > 65535 {
@@ -64,7 +70,15 @@ func ValidateMessage(m *pb.Msg, fromDevice bool) error {
 	if fromDevice {
 		switch b := m.Body.(type) {
 		case *pb.Msg_Heartbeat:
-			if b.Heartbeat != nil {
+			if b.Heartbeat != nil && b.Heartbeat.Id != 0 {
+				return nil
+			}
+		case *pb.Msg_Released:
+			if b.Released != nil && b.Released.Id != 0 {
+				return nil
+			}
+		case *pb.Msg_SessionEnd:
+			if b.SessionEnd != nil && b.SessionEnd.Reason == 1 {
 				return nil
 			}
 		case *pb.Msg_Status:
@@ -72,12 +86,12 @@ func ValidateMessage(m *pb.Msg, fromDevice bool) error {
 				return nil
 			}
 		case *pb.Msg_CfgData:
-			if b.CfgData != nil && len(b.CfgData.Psk) == 0 && b.CfgData.Password == "" {
+			if b.CfgData != nil && b.CfgData.Psk == nil && b.CfgData.Password == nil {
 				_, err := ValidateConfig(b.CfgData, true)
 				return err
 			}
 		case *pb.Msg_CfgResult:
-			if b.CfgResult != nil && b.CfgResult.Code <= 3 && b.CfgResult.Field <= 10 {
+			if b.CfgResult != nil && b.CfgResult.Code <= 3 && b.CfgResult.Field <= 11 {
 				return nil
 			}
 		}
@@ -99,7 +113,7 @@ func ValidateMessage(m *pb.Msg, fromDevice bool) error {
 			return nil
 		}
 	case *pb.Msg_ReleaseAll:
-		if b.ReleaseAll != nil {
+		if b.ReleaseAll != nil && b.ReleaseAll.Id != 0 {
 			return nil
 		}
 	case *pb.Msg_Heartbeat:

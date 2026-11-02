@@ -9,9 +9,9 @@ config HID_TEST_FORCE_6KRO
 config HID_TEST_USB_VID
     hex "USB vendor ID (must be authorized for your use)"
     range 0x0000 0xffff
-    default 0x046d
+    default 0x0000
 config HID_TEST_USB_PID
     hex "USB product ID"
     range 0x0000 0xffff
-    default 0xc52b
+    default 0x0000
 endmenu

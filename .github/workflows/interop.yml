@@ -1,0 +1,24 @@
+name: C firmware and Go interoperability
+on: [push, pull_request]
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: sources/host/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: bash scripts/wsl/bootstrap.sh
+      - name: Fetch the firmware's pinned cryptographic implementation
+        run: |
+          git clone --depth 1 --branch v6.0.3 https://github.com/espressif/esp-idf.git build/device/deps/esp-idf
+          git -C build/device/deps/esp-idf submodule update --init --depth 1 components/mbedtls/mbedtls
+      - name: Build and test actual C session code against Go
+        run: |
+          export PATH="$PWD/build/tools/bin:$PWD/build/tools/proto/bin:$PATH"
+          cmake -S . -B build/host/interop -G Ninja -DEK_SANITIZERS=ON -DEK_PSA_SOURCE="$PWD/build/device/deps/esp-idf/components/mbedtls/mbedtls/tf-psa-crypto"
+          cmake --build build/host/interop --target test-protocol linux-input-probe -j 4

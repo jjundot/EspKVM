@@ -1,0 +1,15 @@
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0
+blocking=false keyboard=0 buttons=0 raw-motion=0 raw-wheel=0 own-injected=0 swallowed=0

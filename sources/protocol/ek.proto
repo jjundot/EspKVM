@@ -1,6 +1,6 @@
 syntax = "proto3";
 package ek;
-option go_package = "github.com/jjun/esp-kvm/internal/protocol/pb";
+option go_package = "github.com/jjundot/EspKVM/internal/protocol/pb";
 
 message Empty {}
 
@@ -13,9 +13,13 @@ message Challenge {
   bool   paired    = 5;
   string name      = 6;
 }
-message Auth     { bytes nonce_c = 1; bytes hmac = 2; }  // 16B, 32B
+message Auth     { bytes nonce_c = 1; bytes hmac = 2; bytes owner = 3; bool takeover = 4; }  // 16B, 32B
 message AuthOk   { bytes hmac = 1; }                     // 32B
 message AuthFail { uint32 reason = 1; }
+message ReleaseAll { uint32 id = 1; }
+message Released { uint32 id = 1; } // all three USB release transfers completed
+message Heartbeat { uint32 id = 1; bool reply = 2; }
+message SessionEnd { uint32 reason = 1; } // 1=authenticated replacement
 
 // 输入(加密)
 message KbState {
@@ -45,14 +49,15 @@ message Status {
 message Config {
   string name     = 1;
   string ssid     = 2;
-  string password = 3;
-  bytes  psk      = 4;   // 空 = 不修改;CFG_DATA 返回时恒为空
+  optional string password = 3;
+  optional bytes psk = 4; // 缺省保留;存在时必须16B;读取时缺省
   uint32 usb_vid  = 5;
   uint32 usb_pid  = 6;
   uint32 ip       = 7;   // 数值形式: 192.168.1.10 = 0xC0A8010A
   uint32 gw       = 8;
   uint32 mask     = 9;
   uint32 tcp_port = 10;
+  bool six_kro = 11; // 强制Boot描述符及8B报告,重启生效
 }
 
 message ConfigResult {
@@ -65,13 +70,13 @@ message SerialInfo {
   uint32 fw_ver = 1;
   bytes mac = 2; // 6B
   bool paired = 3;
-  Config config = 4; // psk/password 恒为空
+  Config config = 4; // psk/password 不存在
 }
 message SerialAck {
   uint32 code = 1; // 0=成功,1=不支持版本,2=非法请求,3=存储失败,4=忙
 }
 message SerialPacket {
-  uint32 proto_ver = 1; // 1
+  uint32 proto_ver = 1; // 2
   reserved 2; // request_id 统一放在 ek_hdr_t.seq,不在 body 重复存储
   oneof body {
     Empty info_get = 16;
@@ -94,14 +99,16 @@ message Msg {
     KbState   kb          = 16;
     Mouse     mouse       = 17;
     Consumer  consumer    = 18;
-    Empty     release_all = 19;
+    ReleaseAll release_all = 19;
 
-    Empty     heartbeat = 32;
+    Heartbeat heartbeat = 32;
     Status    status    = 33;
+    SessionEnd session_end = 34;
+    Released released = 35;
 
     Empty     cfg_get   = 48;
     Config    cfg_data  = 49;
-    Config    cfg_set   = 50;   // 完整替换;只有空 psk 表示保留
+    Config    cfg_set   = 50;   // 非敏感字段完整替换;缺省凭据保留
     Empty     reboot    = 51;
     ConfigResult cfg_result = 52;
   }

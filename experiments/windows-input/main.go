@@ -201,6 +201,7 @@ func run() error {
 	signal.Notify(quit, os.Interrupt)
 	defer signal.Stop(quit)
 	done := make(chan struct{})
+	probeError := make(chan error, 1)
 	defer close(done)
 	defer block.Store(false)
 	go func() {
@@ -244,7 +245,9 @@ func run() error {
 			}
 			if *inject {
 				if err := injectF24(); err != nil {
-					fmt.Fprintln(os.Stderr, err)
+					probeError <- err
+					postThread.Call(thread, 0x12, 0, 0)
+					return
 				}
 			}
 			if *blockMS > 0 {
@@ -264,7 +267,12 @@ func run() error {
 			return err
 		}
 		if result == 0 {
-			return nil
+			select {
+			case err := <-probeError:
+				return err
+			default:
+				return nil
+			}
 		}
 		user32.NewProc("TranslateMessage").Call(uintptr(unsafe.Pointer(&msg)))
 		user32.NewProc("DispatchMessageW").Call(uintptr(unsafe.Pointer(&msg)))

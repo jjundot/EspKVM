@@ -7,13 +7,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/jjun/esp-kvm/internal/config"
+	"github.com/jjundot/EspKVM/internal/config"
 	"os"
 	"time"
 
-	"github.com/jjun/esp-kvm/internal/protocol/pb"
-	"github.com/jjun/esp-kvm/internal/serialcfg"
-	"github.com/jjun/esp-kvm/internal/session"
+	"github.com/jjundot/EspKVM/internal/protocol/pb"
+	"github.com/jjundot/EspKVM/internal/serialcfg"
+	"github.com/jjundot/EspKVM/internal/session"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -27,7 +27,7 @@ func run() error {
 	confirm := flag.Bool("confirm-reset", false, "explicitly authorize factory reset")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		return errors.New("usage: espkvmctl [flags] ports|info|serial-set|reboot|factory-reset|check|new-psk")
+		return errors.New("usage: espkvmctl [flags] ports|info|serial-set|reboot|factory-reset|check|verify|pending-list|pending-discard|new-psk")
 	}
 	if *storePath == "" {
 		p, e := config.DefaultPath()
@@ -51,6 +51,17 @@ func run() error {
 			fmt.Println(p)
 		}
 		return e
+	case "pending-list":
+		d, e := store.Load()
+		if e != nil {
+			return e
+		}
+		for _, p := range d.Pending {
+			fmt.Printf("%s\t%s\t%s\t%s:%d\n", p.New.ID, p.State, p.New.Name, p.New.IP, p.New.Port)
+		}
+		return nil
+	case "pending-discard":
+		return store.DiscardPending(*id)
 	case "verify":
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()

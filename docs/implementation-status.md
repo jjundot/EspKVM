@@ -1,40 +1,48 @@
-# 实施状态
+# 实施状态（2026-11-02）
 
-本文件区分已落地代码、自动验证和待完成内容，不替代两份设计基线。
+唯一行为基线是 [v11 决议](esp32-kvm-decisions.md)；线格式以 ek.proto/ek.options 为准。下述“通过”只指列明的自动测试或构建，不代表硬件验收完成。
 
-## 已落地
+## 已实现
 
-- 唯一 ek.proto/ek.options；Go/nanopb 构建期生成；Go 生成进程锁与原子替换。
-- 根 CMake/Ninja、host-only 和 WSL 预设；Windows 构建入口；host CI。
-- C/Go 12B 共享帧头、CRC32、528B 有界串口解析及候选超时重同步。
-- Go 字段/方向校验、握手双方认证、原始 Challenge transcript、AES-GCM 和严格 seq。
-- Go 单 writer、128 队列、输入超龄/写期限、独立心跳看门狗、generation 释放接口。
-- 串口单请求事务、随机 request_id、应答关联、总期限；CLI 共用串口库。
-- 客户端配置原子保存、Linux 权限及 Windows ACL；先保存 pending 再下发配置，认证读取新配置后确认。
-- 固件配网引导源码：UART 配网服务、字段校验、NVS 双槽版本/CRC、恢复出厂 tombstone。应用当前仅启动配网，不会开放输入控制。
-- 固件编译、从 IDF 实际元数据生成自包含烧录包、SHA256 校验及 Windows 烧录脚本；IDF CI。
-- 独立 M1 `experiments/usb-hid`：三 HID 接口、Boot/NKRO 编码、描述符与报告一致的固定 6KRO、实验 NVS 模式、SET_PROTOCOL/SET_IDLE/LED、物理按钮触发敲字及按 USB 完成回调串行提交。它不是正式输入队列/释放屏障服务。
-- 最小 Windows M0 `experiments/windows-input`：LL 钩子、Raw Input、默认放行、显式限时阻断及带 marker 的 F24 回注；只记录计数。
+- 协议 v2 候选：optional 凭据、six_kro、带 id 心跳、绑定 owner/接管意图的双方认证、GCM、严格方向和字段长度检查。
+- ReleaseAll/Released：三个 HID 接口全释放完成才确认；调用方 500 ms 有界等待，关闭及 writer 异常唤醒全部等待者。首次引入该确认是为了消除“写出后立即转发，但固件仍在释放中”的接口冲突。
+- 正式固件：静态 IP WiFi STA、TCP、四个静态上下文（一活动会话及最多三握手）、来源/全局预算、认证后串行接管、独立 25 ms 轮询的 3 s 看门狗、TCP/串口共用配置事务。
+- 正式 HID：128 FIFO、完成回调推进、鼠标分段及余量、独立释放状态、pending-release、协议切换重建、SET_IDLE、LED、持久化 6KRO。
+- 配置：凭据锁内合并、脱敏字段缺省、NVS 双槽和 v1 blob 迁移；当前台架构建未配对默认 VID/PID 为 0x046D/0xC52B。串口请求、RX 及解析器已消费区清零。
+- Go 客户端：输入状态/引用计数、物理键码映射、热键重武装、异步切换屏障、抑制集合、鼠标合并和分段、多设备独立重连及显式接管。
+- 平台输入适配器：Windows LL hooks/Raw Input、标记回注、ClipCursor、桌面/会话切换回退；Linux LOCAL 被动读、SYN_REPORT 批次、全释放边界抓取/复查/确认、SYN_DROPPED、设备移除及轮询热插拔。Linux 正常返回 LOCAL 等待释放边界，故障及退出立即解除抓取。
+- 常驻 espkvm 及本地 API：单次短时启动凭据、HttpOnly/SameSite cookie、CSRF、Host/Origin、防重放；敏感读取和 fetch SSE 同样要求 CSRF 请求头，SSE 客户端/事件大小上限、脱敏状态；设备管理、排序、热键、串口/TCP 配置和 pending 操作已接线。
+- 客户端文件跨进程锁、原子替换与原有权限保护；事务 token 防止旧回调删除新 pending。拒绝码 1/3 自动清理，未知结果及存储失败保留候选。
+- Linux 权限规则与安装/卸载脚本；固件复制后哈希校验；module 与仓库路径统一为 github.com/jjundot/EspKVM，Go 工具链基线统一为 1.27.3。
 
-## 自动验证
+## 已验证
 
-C/Go 共用帧向量、CRC、嵌入 Magic、字节拆包、坏 CRC 后嵌套候选恢复、超时、GCM 篡改/重放、输入边界、空释放存在性、配置应答丢失不重发、pending 持久化及 Linux 权限、内存 TCP 双向握手/释放、队满关闭。
+- Windows Go 全包单元测试与 vet；WSL Linux 全包 race 测试与 vet；Windows/Linux 客户端与平台探针构建通过。
+- nanopb/Go Protobuf 字节及 Node 独立 oracle 的 HMAC、密钥、AAD、GCM 密文/tag 向量。
+- 同一份 C 网络会话源码通过 POSIX 任务/硬件适配器与真实 Go TCP 客户端互通：认证、脱敏 CFG_GET、释放确认、接管、三个握手槽、非法方向/缺失字段、3 s 看门狗。
+- C HID FIFO/分段/释放/重挂/协议切换测试；C 配置凭据合并、拒绝、提交失败、双槽恢复及旧 NVS 迁移测试。
+- C 解析器 10,000 组随机碎片/恢复性质测试，及共享向量/噪声/嵌套恢复/超时测试；便携 C 测试在 ASan/UBSan 下通过。另提供 Clang libFuzzer 目标，尚未在本机运行 libFuzzer。
+- ESP-IDF 6.0.3 + esp_tinyusb 3.0.0 的正式固件已编译链接，依赖锁已加入源码目录；未烧录。
+- espkvm API 模式前台运行两秒并正常退出，禁用输入捕获，未输出启动凭据。后台进程凭据交换烟测被自动审批拒绝，未执行；HTTP 认证流程由测试覆盖。
+- Windows 被动探针运行 15 秒并退出，计数全为零；随后 F24 回注返回 Access is denied，0/2 成功。探针已改为回注失败非零退出，详见 [原始记录](../experiments/windows-input/results/2026-11-02.md)。不能据此判定真实输入或阻断实验通过。
+- Linux 探针严格编译通过；当前 WSL 无可读 evdev，诊断路径符合预期。
 
-首次 host 构建、Go race/vet、Windows CLI 交叉编译和约 24 万次串口 fuzz 在 WSL ext4 快照执行。无修改构建、options 触发生成且内容相同时不改生成文件、再次构建不重跑生成器均通过。设备配网固件已用 ESP-IDF v5.2.3 编译，根 CMake 的 device-only 构建与烧录包生成已通过；没有实际烧录。Windows ACL、串口硬件行为、NVS 断电恢复仍需实机验收。
+## 未完成及外部条件
 
-2026-11-01 补充：5.2 分支 EOL 后已迁移到 ESP-IDF 6.0.3。配网固件及 esp_tinyusb 3.0.0 的 M1 应用均已在 WSL ext4 编译、链接并打包。HID fullclean/rebuild 通过，外置 sdkconfig 的 SHA256 前后相同；HID 报告测试和 host race 测试通过，Windows M0 程序已交叉编译。M1 测试默认 VID/PID 已按用户提供的设备日志设置为 0x046D/0xC52B；此前 sdkconfig 若保存了 0，需手动更新。没有烧录、安装桌面钩子或实机 USB/BIOS 测试。
+1. Web UI 前端尚未生成/嵌入；Superdesign 登录超时，等待用户选择“跳过设计直接实现”或完成登录并审阅设计。当前 espkvm 默认浏览器模式会明确拒绝启动，不打开空白控制页；可使用经过验证的 API 模式。
+2. M1 烧录缺少明确串口及具有合法使用依据的 VID/PID，当前串口扫描无设备。不得沿用 Logitech 的默认标识，已有旧 sdkconfig 需显式检查。
+3. Windows 实际敲键/移动、吞键后 Raw Input、提权/安全桌面/锁屏恢复；Linux 真实 evdev、抓取/热插拔及多设备行为；全部仍待用户桌面验收。
+4. 真实 ESP32-S3 的 WiFi/TCP/GCM、USB/BIOS、释放确认、NVS 断电及故障注入验收；500 ms 释放边界须实测确认。
+5. 协议正式冻结和发布、输入到受控机事件的 p50/p95/p99 性能基线仍未完成，见 [验收记录](validation-2026-11-02.md)。
 
-[设计修订](design-review-2026-11-01.md) 已采纳硬件优先、LOCAL 被动读、认证接管、optional 凭据、心跳回显与 SSE/cookie 方案。当前线协议保持原 v1 草案，尚未在业务代码实现这些新协议字段；M1/最小 M0 后集中升级。
+## CLI 与 API 模式
 
-## 仍需实现，不能视为完整可用产品
+配置 JSON 使用 Protobuf JSON：PSK 为 base64，IPv4 为 uint32；CLI new-psk 输出 hex，使用前转换。首次必须给出 password（开放网络给存在的空字符串）及 16B PSK；已配对时缺省两字段表示保留。serial-set 成功不表示新 WiFi 可达，仍需 verify。
 
-1. Windows 最小探针的原生行为/恢复验收；Linux LOCAL 被动读、远程抓取、热插拔及切换边界实验。
-2. M1 三接口/Boot/NKRO 的实机验收，正式 HID 的 128 FIFO、分段位移及独立释放屏障。
-3. 固件 WiFi 静态 IP、TCP server、认证接管与三个握手槽、加密及独立看门狗。
-4. C 消息结构/方向校验和跨语言完整 Protobuf/密码学向量。nanopb 固定长度字段必须额外检查 wire 中必需字段存在性。
-5. 主机平台输入、键码映射、多设备生命周期、统一 dispatcher/热键状态机、鼠标分段合并。
-6. 常驻 espkvm、完整 Web UI、Host/Origin/CSRF/cookie 防护、SSE/POST、TCP 配置服务、pending 恢复选择界面。
-7. 完整固件第三方依赖锁、安装卸载及发布故障注入；现有 nanopb runtime 固定到 0.4.9.1 的 commit。
-8. 设计第 11.1 节全部实机验收和性能基线。
+pending-list 不输出凭据；pending-discard 只删除本地恢复数据，不修改设备。守护进程验证 pending 前暂停自己对应的重连循环，避免争抢设备会话；不自动抢占其他 owner。
 
-当前 CLI `serial-set` 的配置 JSON 使用 protobuf JSON：bytes/PSK 为 base64，IPv4 字段为 uint32 数值。串口不自动生成 PSK，用户需提供随机 16B 值；CLI `new-psk` 输出 hex，转换后写入配置文件。保存成功仍须 `verify`，不能等同于新 WiFi 可达。
+```sh
+espkvm -capture=false -browser=false -bootstrap-file /private/espkvm-launch.txt
+```
+
+启动文件必须不存在，放在用户私有目录。它包含短时、单次 URL fragment 凭据，不能放到共享目录或日志；退出后删除。API 用法见后续前端实现，当前可在开发测试中验证 cookie/CSRF 路径。

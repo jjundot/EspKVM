@@ -41,6 +41,7 @@ static void discard(serial_parser *p, size_t n) {
     p->len -= n;
     memmove(p->data, p->data + n, p->len);
     memmove(p->arrived, p->arrived + n, p->len * sizeof(uint64_t));
+    memset(p->data + p->len, 0, n);
 }
 static void poll(serial_parser *p, uint64_t now, serial_frame_callback cb, void *ctx) {
     while (p->len >= 4) {

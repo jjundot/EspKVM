@@ -78,3 +78,20 @@ func (c *Cipher) Open(header, body []byte) ([]byte, error) {
 	c.seq++
 	return p, nil
 }
+
+// AuthContext binds the client identity and explicit takeover intent to every proof and key.
+func AuthContext(transcript, owner []byte, takeover bool) ([]byte, error) {
+	if len(transcript) != 32 || len(owner) != 16 {
+		return nil, ErrFrame
+	}
+	h := sha256.New()
+	h.Write([]byte("EK-AUTH-V2"))
+	h.Write(transcript)
+	h.Write(owner)
+	flag := byte(0)
+	if takeover {
+		flag = 1
+	}
+	h.Write([]byte{flag})
+	return h.Sum(nil), nil
+}

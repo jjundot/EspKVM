@@ -13,7 +13,7 @@ cmake --build --preset device --target package-hid-selftest
 
 VS Code 选择 `build` / `rebuild` 后，在第二级选择 **Device · HID 测试固件**。Windows 自动经 WSL 构建，无需 Windows CMake，也不必把工程重新打开为 WSL Remote。D 盘源码在 WSL ext4 镜像目录编译，烧录包自动复制回工作区 `build/device/flash/hid-selftest/<包目录>`，配置复制回 `build/device/config`。无需 Go、protoc、PSK 或 WiFi；构建任务不烧录。
 
-按用户提供的设备日志，当前测试默认 VID=`0x046D`、PID=`0xC52B`。`MI_00` 是接口编号，不编码到 PID。可通过 IDF menuconfig 的 **HID hardware bring-up** 修改 VID/PID 和板上按钮 GPIO（默认 GPIO0）。已有 sdkconfig 会保留旧值；若此前配置为 0，需要在 menuconfig 中更新，值为 0 时应用仍会停止 USB 启动。
+默认 VID/PID 均为 `0x0000`，必须显式设置为具有合法使用依据的值后才能启动 USB。`MI_00` 是接口编号，不编码到 PID。可通过 IDF menuconfig 的 **HID hardware bring-up** 修改 VID/PID 和板上按钮 GPIO（默认 GPIO0）。已有 sdkconfig 会保留旧值；若此前配置为 0，需要在 menuconfig 中更新，值为 0 时应用仍会停止 USB 启动。
 
 ```sh
 cd experiments/usb-hid

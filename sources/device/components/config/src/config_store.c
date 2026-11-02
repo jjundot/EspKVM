@@ -68,7 +68,9 @@ uint32_t config_validate(const ek_Config *c, bool has_pair) {
         return 1;
     if (!utf8(c->ssid, 32) || !c->ssid[0])
         return 2;
-    size_t n = strnlen(c->password, sizeof(c->password));
+    if (!has_pair && !c->has_password)
+        return 3;
+    size_t n = c->has_password ? strnlen(c->password, sizeof(c->password)) : 0;
     if (n && (n < 8 || n > 63)) {
         if (n != 64)
             return 3;
@@ -76,7 +78,7 @@ uint32_t config_validate(const ek_Config *c, bool has_pair) {
             if (!isxdigit((unsigned char)c->password[i]))
                 return 3;
     }
-    if (c->psk.size != 16 && (!has_pair || c->psk.size))
+    if ((c->has_psk && c->psk.size != 16) || (!has_pair && !c->has_psk))
         return 4;
     if (!c->usb_vid || c->usb_vid > 65535)
         return 5;
@@ -97,8 +99,8 @@ static bool load_slot(const char *key, ek_Config *cfg, bool *is_paired, uint32_t
     size_t n = sizeof(storage);
     if (nvs_get_blob(handle, key, storage, &n) != ESP_OK || n < 20)
         return false;
-    if (memcmp(storage, "EKCF", 4) || get32(storage + 4) != 1 || get32(storage + 12) > 1 ||
-        get32(storage + n - 4) != frame_crc32(storage, n - 4))
+    if (memcmp(storage, "EKCF", 4) || (get32(storage + 4) != 1 && get32(storage + 4) != 2) ||
+        get32(storage + 12) > 1 || get32(storage + n - 4) != frame_crc32(storage, n - 4))
         return false;
     *version = get32(storage + 8);
     *is_paired = get32(storage + 12) != 0;
@@ -110,9 +112,14 @@ static bool load_slot(const char *key, ek_Config *cfg, bool *is_paired, uint32_t
     pb_istream_t stream = pb_istream_from_buffer(storage + 16, n - 20);
     if (!pb_decode(&stream, ek_Config_fields, cfg))
         return false;
+    if (get32(storage + 4) == 1) {
+        cfg->has_password = true;
+        cfg->has_psk = true;
+    }
     return cfg->psk.size == 16 && !config_validate(cfg, false);
 }
 esp_err_t config_init(void) {
+    active=(ek_Config)ek_Config_init_zero;paired=false;generation=0;
     mutex = xSemaphoreCreateMutexStatic(&mutex_storage);
     esp_err_t e = nvs_flash_init();
     if (e != ESP_OK)
@@ -135,9 +142,22 @@ bool config_get(ek_Config *out, bool redact) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     *out = active;
     bool result = paired;
+    if (!paired) {
+        *out = (ek_Config)ek_Config_init_zero;
+        strcpy(out->name, "EspKVM");
+        out->tcp_port = 24800;
+        out->ip = 0xc0a801c8;
+        out->gw = 0xc0a80101;
+        out->mask = 0xffffff00;
+        // Bench build identity requested for the connected test device.
+        out->usb_vid = 0x046d;
+        out->usb_pid = 0xc52b;
+    }
     if (redact) {
         memset(out->psk.bytes, 0, 16);
         out->psk.size = 0;
+        out->has_psk = false;
+        out->has_password = false;
         memset(out->password, 0, sizeof(out->password));
     }
     xSemaphoreGive(mutex);
@@ -148,7 +168,7 @@ static esp_err_t commit(const ek_Config *c, bool pair) {
         return ESP_ERR_INVALID_STATE;
     uint32_t next = generation + 1;
     memcpy(storage, "EKCF", 4);
-    put32(storage + 4, 1);
+    put32(storage + 4, 2);
     put32(storage + 8, next);
     put32(storage + 12, pair ? 1 : 0);
     size_t n = 16;
@@ -176,16 +196,25 @@ ek_ConfigResult config_save(const ek_Config *candidate) {
         result.code = 3;
         return result;
     }
-    result.field = config_validate(candidate, paired);
+    ek_Config next = *candidate;
+    if (paired && !next.has_password) {
+        memcpy(next.password, active.password, sizeof(next.password));
+        next.has_password = true;
+    }
+    if (paired && !next.has_psk) {
+        next.psk = active.psk;
+        next.has_psk = true;
+    }
+    result.field = config_validate(&next, false);
     if (result.field) {
         result.code = 1;
     } else {
-        ek_Config next = *candidate;
-        if (!next.psk.size)
-            next.psk = active.psk;
         if (commit(&next, true) != ESP_OK)
             result.code = 2;
     }
+    volatile unsigned char *wipe = (volatile unsigned char *)&next;
+    for (size_t i = 0; i < sizeof(next); i++)
+        wipe[i] = 0;
     xSemaphoreGive(mutex);
     return result;
 }

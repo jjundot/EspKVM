@@ -35,6 +35,28 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n; i++)
             serial_parser_feed(&p, raw + i, 1, 0, callback, NULL);
         assert(received == before + 1);
+        // Noise and fragmented valid frames recover without a parser reset.
+        const uint8_t noise[] = {0, 'E', 'K', 'E', 0xff};
+        serial_parser_feed(&p, noise, sizeof(noise), 0, callback, NULL);
+        before = received;
+        serial_parser_feed(&p, raw, n, 0, callback, NULL);
+        assert(received == before + 1);
+        // An incomplete outer frame must not hide a nested valid frame forever.
+        p = (serial_parser){0};
+        uint8_t outer[12];
+        frame_header incomplete = {.len = 512, .flags = 2, .seq = 99};
+        assert(frame_header_encode(outer, &incomplete));
+        serial_parser_feed(&p, outer, sizeof(outer), 0, callback, NULL);
+        before = received;
+        serial_parser_feed(&p, raw, n, 500, callback, NULL);
+        serial_parser_feed(&p, NULL, 0, 1000, callback, NULL);
+        assert(received == before + 1);
+        // A truncated frame expires; a later frame is accepted.
+        p = (serial_parser){0};
+        serial_parser_feed(&p, raw, 8, 0, callback, NULL);
+        before = received;
+        serial_parser_feed(&p, raw, n, 1000, callback, NULL);
+        assert(received == before + 1);
         raw[n - 1] ^= 1;
         p = (serial_parser){0};
         before = received;

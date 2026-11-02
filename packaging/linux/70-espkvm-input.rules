@@ -1,0 +1,3 @@
+# Dedicated opt-in group; no world-writable input nodes or global uinput access.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", GROUP="espkvm", MODE="0660"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", GROUP="espkvm", MODE="0660"

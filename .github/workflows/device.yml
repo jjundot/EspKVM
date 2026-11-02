@@ -16,6 +16,6 @@ jobs:
             git clone --depth 1 --branch 0.4.9.1 https://github.com/nanopb/nanopb.git build/device/deps/nanopb
             test "$(git -C build/device/deps/nanopb rev-parse HEAD)" = cad3c18ef15a663e30e3e43e3a752b66378adec1
             export PATH="$PWD/build/tools/proto/bin:$PATH"
-            cmake -S . -B build/device/cmake -G Ninja -DBUILD_HOST=OFF -DBUILD_DEVICE=ON -DPython3_EXECUTABLE="$PWD/build/tools/proto/bin/python"
+            cmake -S . -B build/device/cmake -G Ninja -DBUILD_HOST=OFF -DBUILD_DEVICE=ON -DPython3_EXECUTABLE="$PWD/build/tools/proto/bin/python" -DEK_PSA_SOURCE="$IDF_PATH/components/mbedtls/mbedtls/tf-psa-crypto"
             cmake --build build/device/cmake --target package-device test-protocol
             cmake --build build/device/cmake --target package-hid-selftest

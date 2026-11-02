@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"github.com/jjun/esp-kvm/internal/protocol"
-	"github.com/jjun/esp-kvm/internal/protocol/pb"
+	"github.com/jjundot/EspKVM/internal/protocol"
+	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"go.bug.st/serial"
 	"google.golang.org/protobuf/proto"
 	"io"
@@ -69,7 +69,7 @@ func (c *Client) Request(p *pb.SerialPacket) (*pb.SerialPacket, error) {
 	seq := c.seq
 	c.seq++
 	p = proto.Clone(p).(*pb.SerialPacket)
-	p.ProtoVer = 1
+	p.ProtoVer = protocol.Version
 	b, e := proto.Marshal(p)
 	if e != nil {
 		return nil, e
@@ -103,7 +103,7 @@ func (c *Client) Request(p *pb.SerialPacket) (*pb.SerialPacket, error) {
 				continue
 			}
 			reply := new(pb.SerialPacket)
-			if proto.Unmarshal(frame.Body, reply) != nil || reply.ProtoVer != 1 || reply.Body == nil {
+			if proto.Unmarshal(frame.Body, reply) != nil || reply.ProtoVer != protocol.Version || reply.Body == nil {
 				continue
 			}
 			if a := reply.GetAck(); a != nil {
@@ -116,9 +116,21 @@ func (c *Client) Request(p *pb.SerialPacket) (*pb.SerialPacket, error) {
 				continue
 			}
 			if kind == 1 && reply.GetInfo() != nil {
+				info := reply.GetInfo()
+				if len(info.Mac) != 6 || info.Config == nil || info.Config.Password != nil || info.Config.Psk != nil {
+					return nil, protocol.ErrFrame
+				}
+				if info.Paired {
+					if _, e := protocol.ValidateConfig(info.Config, true); e != nil {
+						return nil, e
+					}
+				}
 				return reply, nil
 			}
 			if kind == 2 && reply.GetCfgResult() != nil {
+				if reply.GetCfgResult().Code > 3 || reply.GetCfgResult().Field > 11 {
+					return nil, protocol.ErrFrame
+				}
 				return reply, nil
 			}
 		}
