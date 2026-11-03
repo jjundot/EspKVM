@@ -5,3 +5,10 @@
 .serial-select{display:flex;align-items:flex-end;gap:8px}
 .serial-select label{flex:1;min-width:0;margin:0}
 .serial-select select,.serial-select button{height:38px}
+.keep-awake-fields{margin:22px 0 12px;padding:14px 16px;border:1px solid #2a394d;border-radius:10px;min-width:0}
+.keep-awake-fields legend{padding:0 6px;color:#b6e4cf;font-size:14px;font-weight:650}
+.keep-awake-fields .small{line-height:1.65;margin:5px 0 12px}
+.keep-awake-fields input:disabled{opacity:.45}
+.keep-awake-save-note{border-top:1px solid #2a394d;padding-top:12px}
+.keep-awake-status{grid-column:1/-1}.keep-awake-status small{display:block;color:#8292a6;margin-top:5px}
+.device-meta strong{overflow-wrap:anywhere}

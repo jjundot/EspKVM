@@ -27,6 +27,7 @@ type Event struct {
 	Suppressed         bool
 	Reset              bool
 	Resync             bool
+	Synthetic          bool
 	Epoch              uint64
 	Device             string
 	Kind               Kind

@@ -210,6 +210,10 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 		}
 		usage, ok := keymap.Set1(uint16(raw.scan), raw.flags&1 != 0)
 		kind := input.Key
+		if button, found := keymap.WindowsBrowserMouseButton(raw.vk); found {
+			usage, ok, kind = button, true, input.Button
+			input.DebugMousef("WH_KEYBOARD_LL VK=0x%x scan=0x%x flags=0x%x -> XBUTTON%d down=%t", raw.vk, raw.scan, raw.flags, button-2, raw.flags&0x80 == 0)
+		}
 		if raw.vk == 0x13 {
 			usage = 0x48
 			ok = true
@@ -220,13 +224,17 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 			kind = input.Consumer
 		}
 		if ok {
-			event := input.Event{Device: "windows-hooks", Kind: kind, Code: usage, Down: raw.flags&0x80 == 0, Captured: time.Now()}
+			event := input.Event{Device: "windows-hooks", Kind: kind, Code: usage, Down: raw.flags&0x80 == 0, Captured: time.Now(), Synthetic: raw.flags&0x10 != 0}
 			swallow := s.route.routeEvent(&event)
 			token := input.Token(kind, usage)
 			s.mu.Lock()
 			if !swallow {
 				if event.Down {
-					s.forwarded[token] = keyboardInput(uint16(raw.scan), raw.flags&1 != 0, raw.vk)
+					if kind == input.Button {
+						s.forwarded[token] = mouseUp(usage)
+					} else {
+						s.forwarded[token] = keyboardInput(uint16(raw.scan), raw.flags&1 != 0, raw.vk)
+					}
 				} else {
 					delete(s.forwarded, token)
 				}
@@ -320,7 +328,10 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 			known = false
 		}
 		if known {
-			event := input.Event{Device: "windows-hooks", Kind: input.Button, Code: button, Down: down, Captured: time.Now()}
+			if button >= 3 {
+				input.DebugMousef("WH_MOUSE_LL wParam=0x%x mouseData=0x%x flags=0x%x -> XBUTTON%d down=%t", wparam, raw.data, raw.flags, button-2, down)
+			}
+			event := input.Event{Device: "windows-hooks", Kind: input.Button, Code: button, Down: down, Captured: time.Now(), Synthetic: raw.flags&1 != 0}
 			swallow := s.route.routeEvent(&event)
 			token := input.Token(input.Button, button)
 			s.mu.Lock()

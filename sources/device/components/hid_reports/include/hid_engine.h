@@ -30,6 +30,10 @@ typedef struct {
 } hid_engine;
 void hid_engine_release(hid_engine *e, uint32_t generation);
 void hid_engine_mount(hid_engine *e, bool mounted);
+void hid_engine_attach(hid_engine *e);
+void hid_engine_detach(hid_engine *e);
+void hid_engine_suspend(hid_engine *e);
+void hid_engine_resume(hid_engine *e);
 void hid_engine_protocol(hid_engine *e, bool six_kro, uint64_t now);
 bool hid_engine_offer(hid_engine *e, const hid_event *event, uint32_t generation, uint64_t now);
 bool hid_engine_next(hid_engine *e, uint64_t now);

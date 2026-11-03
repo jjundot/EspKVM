@@ -40,6 +40,19 @@ func TestZeroReleasePresence(t *testing.T) {
 		}
 	}
 }
+func TestKeepAwakeValidation(t *testing.T) {
+	c := validConfig()
+	c.KeepAwake = &pb.KeepAwake{Enabled: true, IntervalMinS: 30, IntervalMaxS: 60}
+	if _, err := ValidateConfig(c, false); err != nil {
+		t.Fatal("C=0/D=0 should be valid", err)
+	}
+	for _, p := range []*pb.KeepAwake{{IntervalMinS: 0, IntervalMaxS: 60}, {IntervalMinS: 61, IntervalMaxS: 60}, {IntervalMinS: 1, IntervalMaxS: 86401}} {
+		c.KeepAwake = p
+		if field, err := ValidateConfig(c, false); err == nil || field != 12 {
+			t.Fatalf("invalid policy accepted: %+v", p)
+		}
+	}
+}
 func TestInputBounds(t *testing.T) {
 	for _, m := range []*pb.Msg{{Body: &pb.Msg_Kb{Kb: &pb.KbState{KeysLo: 1}}}, {Body: &pb.Msg_Kb{Kb: &pb.KbState{Keys_192_255: 1 << 32}}}, {Body: &pb.Msg_Mouse{Mouse: &pb.Mouse{Dx: 1000001}}}, {Body: &pb.Msg_Consumer{Consumer: &pb.Consumer{Usage: 65535}}}} {
 		if ValidateMessage(m, false) == nil {

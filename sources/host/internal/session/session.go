@@ -53,6 +53,7 @@ type Session struct {
 	last           atomic.Int64
 	epoch          time.Time
 	Challenge      *pb.Challenge
+	HostActivity   func() (uint32, bool)
 }
 
 func writeAll(w io.Writer, b []byte) error {
@@ -375,7 +376,7 @@ func (s *Session) Run(ctx context.Context, onMessage func(*pb.Msg)) error {
 		if h := m.GetHeartbeat(); h != nil {
 			if h.Reply {
 				s.acceptProbe(h.Id, time.Now())
-			} else if e := s.Send(&pb.Msg{Body: &pb.Msg_Heartbeat{Heartbeat: &pb.Heartbeat{Id: h.Id, Reply: true}}}, 0, false); e != nil {
+			} else if e := s.Send(&pb.Msg{Body: &pb.Msg_Heartbeat{Heartbeat: s.heartbeat(h.Id, true)}}, 0, false); e != nil {
 				return e
 			}
 		}
@@ -430,7 +431,14 @@ func (s *Session) sendProbe() error {
 	id := s.probeID
 	s.probeAt = now
 	s.probeMu.Unlock()
-	return s.send(pending{msg: &pb.Msg{Body: &pb.Msg_Heartbeat{Heartbeat: &pb.Heartbeat{Id: id}}}})
+	return s.send(pending{msg: &pb.Msg{Body: &pb.Msg_Heartbeat{Heartbeat: s.heartbeat(id, false)}}})
+}
+func (s *Session) heartbeat(id uint32, reply bool) *pb.Heartbeat {
+	h := &pb.Heartbeat{Id: id, Reply: reply}
+	if s.HostActivity != nil {
+		h.HostIdleS, h.HostActivityKnown = s.HostActivity()
+	}
+	return h
 }
 func (s *Session) acceptProbe(id uint32, now time.Time) {
 	s.probeMu.Lock()

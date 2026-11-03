@@ -75,6 +75,26 @@ int main(void) {
         hid_engine_complete(&e, true);
     }
     assert(e.keyboard.modifiers == 0);
+    hid_engine resumed = {0};
+    hid_engine_mount(&resumed, true);
+    release(&resumed);
+    uint32_t connected_generation = resumed.generation;
+    hid_engine_detach(&resumed);
+    assert(!resumed.mounted && resumed.generation == connected_generation);
+    hid_engine_attach(&resumed);
+    assert(resumed.mounted && resumed.generation == connected_generation);
+    release(&resumed);
+    assert(hid_engine_offer(&resumed, &down, connected_generation, 0));
+    assert(hid_engine_next(&resumed, 0));
+    hid_engine_complete(&resumed, true);
+    hid_engine_suspend(&resumed);
+    assert(!resumed.mounted && !hid_engine_ready(&resumed));
+    assert(resumed.generation == connected_generation); // Suspend does not invalidate the TCP session.
+    hid_engine_resume(&resumed);
+    assert(resumed.mounted && resumed.generation == connected_generation && resumed.pending_release);
+    release(&resumed);
+    assert(hid_engine_ready(&resumed));
+    assert(hid_engine_offer(&resumed, &up, connected_generation, 1));
     puts("HID FIFO, completion, movement and release barrier passed");
     return 0;
 }

@@ -194,6 +194,7 @@ static bool handshake(connection *c) {
         c->authenticated = true;
         c->last_valid = now_ms();
         c->generation = hid_release();
+        hid_host_disconnected();
     }
     unlock_state();
     if (!allowed || now_ms() >= deadline)
@@ -223,6 +224,7 @@ static bool status(connection *c) {
     c->msg.which_body = ek_Msg_status_tag;
     ek_Status *s = &c->msg.body.status;
     s->fw_ver = EK_FW_VERSION;
+    s->keep_awake_state = hid_keep_awake_status(&s->keep_awake_moves);
     snprintf(s->fw_version, sizeof(s->fw_version), "%s", EK_FW_VERSION_STRING);
     s->uptime_s = now_ms() / 1000;
     s->usb_mounted = hid_mounted();
@@ -256,12 +258,19 @@ static bool dispatch(connection *c) {
         if (active == c && !c->retired)
             c->generation = hid_release();
         unlock_state();
+        hid_wake_host();
         return true;
     case ek_Msg_heartbeat_tag:
         if (c->msg.body.heartbeat.reply) {
-            if(c->msg.body.heartbeat.id==c->probe && now_ms()-c->probe_sent<=1000)c->probe=0;
+            if(c->msg.body.heartbeat.id==c->probe && now_ms()-c->probe_sent<=1000) {
+                c->probe=0;
+                hid_host_activity(c->msg.body.heartbeat.host_idle_s,
+                                  c->msg.body.heartbeat.host_activity_known);
+            }
             return true;
         }
+        hid_host_activity(c->msg.body.heartbeat.host_idle_s,
+                          c->msg.body.heartbeat.host_activity_known);
         c->msg.body.heartbeat.reply = true;
         return send_msg(c, true, now_ms() + 100);
     case ek_Msg_cfg_get_tag:
@@ -338,6 +347,7 @@ static void connection_task(void *arg) {
     lock_state();
     if (active == c) {
         active = NULL;
+        hid_host_disconnected();
         hid_release();
     }
     c->retired = true;
@@ -363,6 +373,7 @@ static void watchdog(void *arg) {
             active->retired = true;
             fd = active->fd;
             active = NULL;
+            hid_host_disconnected();
             hid_release();
             if (fd >= 0)
                 shutdown(fd, SHUT_RDWR);

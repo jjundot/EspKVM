@@ -22,6 +22,8 @@ import (
 type View struct {
 	Firmware        uint32      `json:"firmware"`
 	FirmwareVersion string      `json:"firmware_version"`
+	KeepAwakeState  uint32      `json:"keep_awake_state"`
+	KeepAwakeMoves  uint32      `json:"keep_awake_moves"`
 	MAC             string      `json:"mac"`
 	Uptime          uint32      `json:"uptime_s"`
 	ID              string      `json:"id"`
@@ -216,6 +218,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 				return
 			}
 			r.current = conn
+			conn.HostActivity = m.dispatcher.HostActivity
 			// An explicit request queued during this successful handshake is
 			// already satisfied. Do not retain it as permission to seize a later owner.
 			select {
@@ -237,6 +240,8 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 				}
 				r.view.LastValid = time.Now()
 				if s := message.GetStatus(); s != nil {
+					r.view.KeepAwakeState = s.KeepAwakeState
+					r.view.KeepAwakeMoves = s.KeepAwakeMoves
 					r.view.Firmware = s.FwVer
 					if s.FwVersion != "" {
 						r.view.FirmwareVersion = s.FwVersion
@@ -375,7 +380,11 @@ type requester struct {
 
 func (r requester) Request(p *pb.SerialPacket) (*pb.SerialPacket, error) {
 	if p.GetInfoGet() != nil {
-		return &pb.SerialPacket{Body: &pb.SerialPacket_Info{Info: &pb.SerialInfo{Paired: true}}}, nil
+		c, err := r.manager.GetConfig(r.ctx, r.id)
+		if err != nil {
+			return nil, err
+		}
+		return &pb.SerialPacket{Body: &pb.SerialPacket_Info{Info: &pb.SerialInfo{Paired: true, Config: c}}}, nil
 	}
 	if p.GetCfgSet() == nil {
 		return nil, errors.New("unsupported TCP provisioning operation")

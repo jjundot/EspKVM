@@ -97,6 +97,45 @@ function firmwareLabel(value) {
   if(!version)return '—';
   return `v${(version>>>16)&255}.${(version>>>8)&255}.${version&255}`;
 }
+function keepAwakeLabel(d) {
+  if (!d.connected) return '设备未连接';
+  return ['未启用','暂停：HOST 心跳超时','暂停：HOST 无近期操作','已停止：设备空闲超过 C','等待空闲间隔','保持中'][d.keep_awake_state] || '未知';
+}
+function setupKeepAwake(form, container) {
+  const fields=document.createElement('fieldset'); fields.className='keep-awake-fields';
+  fields.innerHTML=`<legend>防休眠策略</legend><label class="check"><input name="keepAwakeEnabled" type="checkbox">启用此设备的防休眠</label>
+    <p class="keep-awake-unsupported muted small" hidden>当前设备固件未提供防休眠配置，请先升级固件。</p>
+    <div class="two-col"><label>最短空闲检查间隔 A（秒）<input name="keepAwakeMin" type="number" min="1" max="86400" step="1" value="30" required></label><label>最长空闲检查间隔 B（秒）<input name="keepAwakeMax" type="number" min="1" max="86400" step="1" value="60" required></label></div>
+    <p class="muted small">每次从 A～B 秒中随机选择间隔。期间操作该设备会重新计时；空闲到期时轻微随机移动鼠标。</p>
+    <label>设备无主动操作后停止 C（秒）<input name="keepAwakeStop" type="number" min="0" max="4294967295" step="1" value="1800" required></label>
+    <p class="muted small">默认 1800 秒（30 分钟），0 表示一直保持。重新操作该设备后恢复计时；模拟移动不算主动操作。</p>
+    <label>HOST 最近有操作的时间范围 D（秒）<input name="keepAwakeHost" type="number" min="0" max="4294967295" step="1" value="120" required></label>
+    <p class="muted small">默认 120 秒。HOST 操作本机或任意设备都算；D 大于 0 时，HOST 断开或心跳超过 3 秒未到会暂停防休眠。D 为 0 时始终满足此前提，HOST 离线也可保持。USB 未就绪或有按键、鼠标按钮按住时不会模拟移动。</p>
+    <p class="muted small keep-awake-save-note">随设备配置一起保存至 ESP32，保存后设备重启生效。</p>`;
+  if(container)container.append(fields); else form.querySelector('.actions').before(fields);
+  form.elements.keepAwakeEnabled.onchange=()=>{ updateKeepAwakeFields(form); toast('防休眠策略将在保存设备配置后生效。','info'); };
+  writeKeepAwake(form, {enabled:false,interval_min_s:30,interval_max_s:60,stop_after_s:1800,host_active_within_s:120});
+}
+function updateKeepAwakeFields(form) {
+  const supported=form.dataset.keepAwakeSupported==='true';
+  form.elements.keepAwakeEnabled.disabled=!supported;
+  for(const name of ['keepAwakeMin','keepAwakeMax','keepAwakeStop','keepAwakeHost'])form.elements[name].disabled=!supported||!form.elements.keepAwakeEnabled.checked;
+  form.querySelector('.keep-awake-unsupported').hidden=supported;
+}
+function writeKeepAwake(form, policy) {
+  form.dataset.keepAwakeSupported=policy?'true':'false';
+  const f=form.elements, p=policy||{};
+  f.keepAwakeEnabled.checked=!!p.enabled; f.keepAwakeMin.value=p.interval_min_s??30; f.keepAwakeMax.value=p.interval_max_s??60;
+  f.keepAwakeStop.value=p.stop_after_s??1800; f.keepAwakeHost.value=p.host_active_within_s??120;
+  updateKeepAwakeFields(form);
+}
+function readKeepAwake(form) {
+  if(form.dataset.keepAwakeSupported!=='true')return undefined;
+  const f=form.elements;
+  const p={enabled:f.keepAwakeEnabled.checked,interval_min_s:Number(f.keepAwakeMin.value),interval_max_s:Number(f.keepAwakeMax.value),stop_after_s:Number(f.keepAwakeStop.value),host_active_within_s:Number(f.keepAwakeHost.value)};
+  if(!Object.entries(p).every(([k,v])=>k==='enabled'||Number.isInteger(v)&&v>=0&&v<=4294967295)||p.interval_min_s<1||p.interval_max_s>86400||p.interval_min_s>p.interval_max_s)throw new Error('防休眠参数不正确：A 和 B 必须为 1～86400 的整数，且 A 不能大于 B；C 和 D 必须是非负整数。');
+  return p;
+}
 function hotkeyLabel(keys) {
   const modifiers = {224:'Ctrl',225:'Shift',226:'Alt',227:'Win',228:'Ctrl',229:'Shift',230:'Alt',231:'Win'};
   return (keys || []).map(code => modifiers[code] || (code >= 4 && code <= 29 ? String.fromCharCode(65 + code - 4) : `键${code}`)).join('+') || '未设置';
@@ -107,11 +146,11 @@ function render() {
   const sw = state.switch || {}, current = sw.target || 'LOCAL';
   $('#switch-status').textContent = sw.recording ? '正在录制：按下并释放一组修饰键组合。再次点击按钮结束录制。' : `切换快捷键：${hotkeyLabel(state.hotkey)} · 当前目标：${targetLabel(current)}${sw.phase && sw.phase !== 'idle' ? ` · ${sw.phase}` : ''}`;
   $('#record-hotkey').textContent = sw.recording ? '结束录制' : '录制切换热键';
-  const targets = [{id:'LOCAL', name:'本机', ready:true}, ...state.devices.map(d => ({id:d.id,name:d.name || d.id,ready:d.enabled && d.connected && d.usb}))];
-  $('#targets').innerHTML = targets.map(t => `<button class="target ${current===t.id?'active':''}" data-target="${esc(t.id)}"><i class="dot ${t.ready?'ok':''}"></i><span>${esc(t.name)}<small>${t.id==='LOCAL'?'本地输入':t.ready?'在线 · USB 已就绪':'连接中或 USB 未就绪'}</small></span></button>`).join('');
+  const targets = [{id:'LOCAL', name:'本机', ready:true, status:'本地输入'}, ...state.devices.map(d => ({id:d.id,name:d.name || d.id,ready:d.enabled && d.connected && d.usb,status:!d.enabled?'设备已禁用':!d.connected?'等待 TCP 连接':!d.usb?'TCP 在线 · 等待 USB HID 枚举':'TCP 与 USB HID 已就绪'}))];
+  $('#targets').innerHTML = targets.map(t => `<button class="target ${current===t.id?'active':''}" data-target="${esc(t.id)}"><i class="dot ${t.ready?'ok':''}"></i><span>${esc(t.name)}<small>${esc(t.status)}</small></span></button>`).join('');
   $$('[data-target]').forEach(b => b.onclick = () => act(() => api('target',{id:b.dataset.target}), `${targetLabel(b.dataset.target)}已设为输入目标。` , b));
   const devices = $('#devices'); $('#device-count').textContent = `${state.devices.length} 台`;
-  devices.innerHTML = state.devices.length ? state.devices.map(d => `<article class="device"><div class="device-head"><i class="dot ${d.connected?'ok':''}"></i><span class="device-name">${esc(d.name || d.id)}</span><button class="icon-button edit-device" data-id="${esc(d.id)}" title="编辑">⋯</button></div><div class="device-ip">${esc(d.id)} · ${esc(d.ip)}:${d.port}</div><div class="device-meta"><span>连接<strong>${d.connected?'已连接':'未连接'}${d.usb?' · USB 就绪':''}</strong></span><span>Wi-Fi 信号<strong>${d.rssi || '—'} dBm</strong></span><span>设备固件<strong>${esc(d.firmware_version || firmwareLabel(d.firmware))}</strong></span><span>往返延迟<strong>${d.rtt?.p50_ns ? (d.rtt.p50_ns/1e6).toFixed(1)+' ms':'—'}</strong></span></div>${d.error?`<p class="small error-text">${esc(d.error)}</p>`:''}<div class="device-actions"><button class="button take-device" data-id="${esc(d.id)}" ${d.connected?'disabled':''} title="当设备被另一台主机占用时，请求让本机替换其会话；不切换键鼠目标">${d.connected?'本机已连接':'从其他主机接管'}</button><button class="button serial-provision" data-id="${esc(d.id)}">串口配网</button><button class="button config-device" data-id="${esc(d.id)}">在线配置</button><button class="button delete-device danger" data-id="${esc(d.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有设备。添加设备后，可在这里管理连接和输入目标。</div>';
+  devices.innerHTML = state.devices.length ? state.devices.map(d => `<article class="device"><div class="device-head"><i class="dot ${d.connected?'ok':''}"></i><span class="device-name">${esc(d.name || d.id)}</span><button class="icon-button edit-device" data-id="${esc(d.id)}" title="编辑">⋯</button></div><div class="device-ip">${esc(d.id)} · ${esc(d.ip)}:${d.port}</div><div class="device-meta"><span>TCP 连接<strong>${d.connected?'已连接':'未连接'}</strong></span><span>USB HID<strong>${d.usb?'已就绪':'未枚举'}</strong></span><span>Wi-Fi 信号<strong>${d.rssi || '—'} dBm</strong></span><span>设备固件<strong>${esc(d.firmware_version || firmwareLabel(d.firmware))}</strong></span><span>往返延迟<strong>${d.rtt?.p50_ns ? (d.rtt.p50_ns/1e6).toFixed(1)+' ms':'—'}</strong></span><span class="keep-awake-status">防休眠<strong>${esc(keepAwakeLabel(d))}</strong><small>本次启动已模拟移动 ${Number(d.keep_awake_moves||0)} 次</small></span></div>${d.error?`<p class="small error-text">${esc(d.error)}</p>`:''}<div class="device-actions"><button class="button take-device" data-id="${esc(d.id)}" ${d.connected?'disabled':''} title="当设备被另一台主机占用时，请求让本机替换其会话；不切换键鼠目标">${d.connected?'本机已连接':'从其他主机接管'}</button><button class="button serial-provision" data-id="${esc(d.id)}">串口配网</button><button class="button config-device" data-id="${esc(d.id)}">在线配置</button><button class="button delete-device danger" data-id="${esc(d.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有设备。添加设备后，可在这里管理连接和输入目标。</div>';
   $$('.edit-device').forEach(b => b.onclick = () => editDevice(b.dataset.id));
   $$('.take-device:not(:disabled)').forEach(b => b.onclick = () => { if (confirm('如果设备正由另一台 EspKVM 主机控制，这会请求断开该会话并让本机连接。它不会切换当前键鼠输入目标。继续？')) act(() => api('takeover',{id:b.dataset.id}), '接管请求已发送；设备连回本机后，还需在上方选择输入目标。', b); });
   $$('.serial-provision').forEach(b => b.onclick = () => openSerialProvision(b.dataset.id, b));
@@ -133,17 +172,17 @@ function editDevice(id) { const d=state.devices.find(x=>x.id===id); if(!d)return
 $('#device-form').onsubmit = e => { if(e.submitter?.value==='cancel')return; e.preventDefault(); const f=e.currentTarget.elements; const device={id:f.id.value,name:f.name.value,ip:f.ip.value,port:Number(f.port.value),psk:f.psk.value,enabled:f.enabled.checked}; act(async()=>{await api('device-save',device); $('#device-dialog').close();}, '设备信息已保存。本机正在尝试连接；首次配网请在设备卡上点击“串口配网”。', e.submitter); };
 $('#record-hotkey').onclick = () => { const active=!state?.switch?.recording; act(async()=>{ await api('recording',{active}); }, active?'已开始录制，请按下并释放要用作切换键的组合。':'热键录制已结束。', $('#record-hotkey')); };
 function dotted(n) { return [24,16,8,0].map(s=>(n>>>s)&255).join('.'); }
-async function openConfig(id, button) { const d=state.devices.find(x=>x.id===id); const f=$('#config-form'); const old=button?.textContent; if(button){button.disabled=true;button.textContent='读取配置…';} notice(''); f.reset(); f.elements.id.value=id; try { const c=await api('device-config-get',{id}); f.elements.deviceName.value=c.name||d?.name||''; f.elements.ssid.value=c.ssid||''; f.elements.ip.value=dotted(c.ip); f.elements.gw.value=dotted(c.gw); f.elements.mask.value=dotted(c.mask); f.dataset.vid=c.usb_vid; f.dataset.pid=c.usb_pid; f.dataset.port=c.tcp_port||24800; $('#config-dialog').showModal(); toast('设备配置已读取。','success'); } catch(e) { showError(e); } finally {if(button?.isConnected){button.disabled=false;button.textContent=old;}} }
+async function openConfig(id, button) { const d=state.devices.find(x=>x.id===id); const f=$('#config-form'); const old=button?.textContent; if(button){button.disabled=true;button.textContent='读取配置…';} notice(''); f.reset(); f.elements.id.value=id; try { const c=await api('device-config-get',{id}); f.elements.deviceName.value=c.name||d?.name||''; f.elements.ssid.value=c.ssid||''; f.elements.ip.value=dotted(c.ip); f.elements.gw.value=dotted(c.gw); f.elements.mask.value=dotted(c.mask); f.dataset.vid=c.usb_vid; f.dataset.pid=c.usb_pid; f.dataset.port=c.tcp_port||24800; f.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(f,c.keep_awake); $('#config-dialog').showModal(); toast('设备配置已读取。','success'); } catch(e) { showError(e); } finally {if(button?.isConnected){button.disabled=false;button.textContent=old;}} }
 function ipv4(value) { const parts=value.split('.'); if(parts.length!==4||parts.some(p=>!/^\d{1,3}$/.test(p)||Number(p)>255))throw new Error('请输入有效的 IPv4 地址'); return parts.reduce((n,p)=>((n*256)+Number(p))>>>0,0); }
 function serialError(e) {
   const message=String(e.message||e).trim();
   if(/access is denied|permission denied|resource busy/i.test(message))return '无法打开串口。请先关闭其他串口监视器或烧录工具，再重试。';
   const invalid=/invalid configuration field (\d+)/i.exec(message);
-  if(invalid){const labels={1:'设备名称',2:'Wi-Fi 名称',3:'Wi-Fi 密码',4:'PSK',5:'USB VID',6:'USB PID',7:'设备 IP',8:'网关',9:'子网掩码',10:'TCP 端口'};return `配置格式不正确：请检查${labels[Number(invalid[1])]||`字段 ${invalid[1]}`}。`;}
+  if(invalid){const labels={1:'设备名称',2:'Wi-Fi 名称',3:'Wi-Fi 密码',4:'PSK',5:'USB VID',6:'USB PID',7:'设备 IP',8:'网关',9:'子网掩码',10:'TCP 端口',12:'防休眠策略（A、B 范围）'};return `配置格式不正确：请检查${labels[Number(invalid[1])]||`字段 ${invalid[1]}`}。`;}
   const rejected=/configuration rejected \(code (\d+)(?:, field (\d+))?\)/i.exec(message);
   if(rejected){
     const code=Number(rejected[1]), field=Number(rejected[2]||0);
-    if(code===1){const labels={1:'设备名称',2:'Wi-Fi 名称',3:'Wi-Fi 密码',4:'PSK',5:'USB VID',6:'USB PID',7:'设备 IP',8:'网关',9:'子网掩码',10:'TCP 端口'};return `设备拒绝了配置：${labels[field]||`字段 ${field}`}不符合要求。请检查后重试。`;}
+    if(code===1){const labels={1:'设备名称',2:'Wi-Fi 名称',3:'Wi-Fi 密码',4:'PSK',5:'USB VID',6:'USB PID',7:'设备 IP',8:'网关',9:'子网掩码',10:'TCP 端口',12:'防休眠策略（A、B 范围）'};return `设备拒绝了配置：${labels[field]||`字段 ${field}`}不符合要求。请检查后重试。`;}
     if(code===2)return '设备无法把配置提交到 NVS（闪存存储）。设备没有确认保存，请检查固件日志和 NVS 状态。';
     if(code===3)return '设备当前正忙，配置未写入。稍等片刻后再试。';
   }
@@ -156,7 +195,7 @@ function serialReadError(e) {
   if(/timeout/i.test(message))return '设备没有返回 EspKVM 配置信息。若串口日志显示 waiting for download，芯片正停在 ROM 下载模式；释放 BOOT/GPIO0 并重启到 SPI 启动模式，确认应用固件已烧录。';
   return `读取设备信息失败：${message}`;
 }
-$('#config-form').onsubmit = e => { if(e.submitter?.value==='cancel')return; e.preventDefault(); const form=e.currentTarget, f=form.elements; try { const config={name:f.deviceName.value,ssid:f.ssid.value,ip:ipv4(f.ip.value),gw:ipv4(f.gw.value),mask:ipv4(f.mask.value),tcp_port:Number(form.dataset.port||24800),usb_vid:Number(form.dataset.vid),usb_pid:Number(form.dataset.pid)}; if(f.password.value)config.password=f.password.value; act(async()=>{await api('device-config-set',{id:f.id.value,config});$('#config-dialog').close();}, '配置已发送。若设备断线或地址改变，请在“配网待验证”中验证新连接。', e.submitter); } catch(err) { showError(err); } };
+$('#config-form').onsubmit = e => { if(e.submitter?.value==='cancel')return; e.preventDefault(); const form=e.currentTarget, f=form.elements; try { const config={name:f.deviceName.value,ssid:f.ssid.value,ip:ipv4(f.ip.value),gw:ipv4(f.gw.value),mask:ipv4(f.mask.value),tcp_port:Number(form.dataset.port||24800),usb_vid:Number(form.dataset.vid),usb_pid:Number(form.dataset.pid)}; config.keep_awake=readKeepAwake(form); config.six_kro=form.dataset.sixKro==='true'; if(f.password.value)config.password=f.password.value; act(async()=>{await api('device-config-set',{id:f.id.value,config});$('#config-dialog').close();}, '配置已发送。若设备断线或地址改变，请在“配网待验证”中验证新连接。', e.submitter); } catch(err) { showError(err); } };
 async function refreshSerialPorts() {
   const select=$('#serial-port');
   const button=$('#refresh-ports'), old=button.textContent; button.disabled=true; button.textContent='查找中…';
@@ -185,6 +224,7 @@ $('#read-serial-info').onclick=async()=>{
     form.elements.ip.value=dotted(c.ip||0); form.elements.gw.value=dotted(c.gw||0); form.elements.mask.value=dotted(c.mask||0);
     form.elements.usbVid.value=Number(c.usb_vid||0).toString(16).padStart(4,'0'); form.elements.usbPid.value=Number(c.usb_pid||0).toString(16).padStart(4,'0');
     form.elements.tcpPort.value=c.tcp_port||24800;
+    form.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(form,c.keep_awake);
     $('#serial-password-help').textContent=info.paired?'已配对设备：密码留空会保留设备当前密码；输入新密码可更改。':'首次配网：密码留空表示使用开放 Wi-Fi。';
     $('#serial-fields').hidden=false; $('#send-serial-config').disabled=false;
     serialStatus(info.paired?'已读取已配对设备信息，请确认网络参数。':'已读取未配对设备信息，请填写 Wi-Fi 名称和网络参数。','success');
@@ -197,9 +237,12 @@ $('#serial-form').onsubmit=e=>{
   e.preventDefault(); const form=e.currentTarget, f=form.elements;
   try {
     const config={name:f.deviceName.value,ssid:f.ssid.value,ip:ipv4(f.ip.value),gw:ipv4(f.gw.value),mask:ipv4(f.mask.value),tcp_port:Number(f.tcpPort.value),usb_vid:parseInt(f.usbVid.value,16),usb_pid:parseInt(f.usbPid.value,16)};
+    config.keep_awake=readKeepAwake(form); config.six_kro=form.dataset.sixKro==='true';
     if(form.dataset.paired!=='true'||f.password.value)config.password=f.password.value;
     const request={port:f.serialPort.value,id:f.id.value,config};
     act(async()=>{await api('serial-set',request);$('#serial-dialog').close();}, '配置已写入设备。设备重新联网后，请在“配网待验证”中点击“验证并完成”，更新本机保存的地址和凭据。', e.submitter);
   } catch(err) { toast(serialError(err),'error'); }
 };
+setupKeepAwake($('#config-form'));
+setupKeepAwake($('#serial-form'),$('#serial-fields'));
 boot().catch(showError);

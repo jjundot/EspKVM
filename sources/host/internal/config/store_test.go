@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"google.golang.org/protobuf/proto"
 	"os"
@@ -137,7 +138,7 @@ func TestStoreProcessLock(t *testing.T) {
 		}
 	}
 	d, e := s.Load()
-	if e != nil || len(d.Hotkey) != 15 {
+	if e != nil || len(d.Hotkey) != len(input.DefaultHotkey())+15 {
 		t.Fatalf("lost concurrent updates: %v %v", d.Hotkey, e)
 	}
 }

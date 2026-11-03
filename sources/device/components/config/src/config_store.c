@@ -24,6 +24,12 @@ static bool paired;
 static uint32_t generation;
 static nvs_handle_t handle;
 static uint8_t storage[528];
+static void keep_awake_defaults(ek_Config *c) {
+    if (c->has_keep_awake) return;
+    c->has_keep_awake = true;
+    c->keep_awake = (ek_KeepAwake){.interval_min_s = 30, .interval_max_s = 60,
+        .stop_after_s = 1800, .host_active_within_s = 120};
+}
 static uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
@@ -102,6 +108,10 @@ uint32_t config_validate(const ek_Config *c, bool has_pair) {
         return 8;
     if (!c->tcp_port || c->tcp_port > 65535)
         return 10;
+    if (c->has_keep_awake && (!c->keep_awake.interval_min_s ||
+        c->keep_awake.interval_max_s < c->keep_awake.interval_min_s ||
+        c->keep_awake.interval_max_s > 86400))
+        return 12;
     return 0;
 }
 static bool load_slot(const char *key, ek_Config *cfg, bool *is_paired, uint32_t *version) {
@@ -149,6 +159,7 @@ esp_err_t config_init(void) {
             paired = pair;
             generation = gen;
         }
+    keep_awake_defaults(&active);
     ESP_LOGI(TAG, "configuration loaded: paired=%u generation=%" PRIu32, (unsigned)paired, generation);
     return ESP_OK;
 }
@@ -167,6 +178,7 @@ bool config_get(ek_Config *out, bool redact) {
         out->usb_vid = 0x046d;
         out->usb_pid = 0xc52b;
     }
+    keep_awake_defaults(out);
     if (redact) {
         memset(out->psk.bytes, 0, 16);
         out->psk.size = 0;
@@ -215,6 +227,11 @@ ek_ConfigResult config_save(const ek_Config *candidate) {
         return result;
     }
     ek_Config next = *candidate;
+    if (!next.has_keep_awake && paired) {
+        next.has_keep_awake = active.has_keep_awake;
+        next.keep_awake = active.keep_awake;
+    }
+    keep_awake_defaults(&next);
     if (paired && !next.has_password) {
         memcpy(next.password, active.password, sizeof(next.password));
         next.has_password = true;

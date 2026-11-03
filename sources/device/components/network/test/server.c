@@ -13,6 +13,10 @@ bool hid_ready(uint32_t gen) { return atomic_load(&generation) == gen; }
 bool hid_healthy(uint32_t gen) { return hid_ready(gen); }
 bool hid_mounted(void) { return true; }
 uint8_t hid_leds(void) { return 0; }
+void hid_host_activity(uint32_t idle_s, bool known) { (void)idle_s; (void)known; }
+void hid_host_disconnected(void) {}
+uint32_t hid_keep_awake_status(uint32_t *moves) { *moves = 0; return 0; }
+void hid_wake_host(void) {}
 bool hid_submit(const ek_Msg *m, uint32_t gen) {
     (void)m;
     return hid_ready(gen);

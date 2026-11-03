@@ -36,6 +36,47 @@ void hid_engine_mount(hid_engine *e, bool mounted) {
         e->in_flight = false; // Endpoint teardown cancels the transfer.
     hid_engine_release(e, e->generation + 1);
 }
+static void reset_transport(hid_engine *e, bool mounted) {
+    e->mounted = mounted;
+    e->in_flight = false;
+    e->epoch++;
+    e->head = e->count = 0;
+    e->keyboard = (keyboard_state){0};
+    e->buttons = 0;
+    e->consumer = 0;
+    e->failed = false;
+    e->pending_release = true;
+    e->release_index = 0;
+    e->rebuild = false;
+}
+void hid_engine_attach(hid_engine *e) { reset_transport(e, true); }
+void hid_engine_detach(hid_engine *e) { reset_transport(e, false); }
+void hid_engine_suspend(hid_engine *e) {
+    e->mounted = false;
+    e->in_flight = false;
+    e->epoch++;
+    e->head = e->count = 0;
+    e->keyboard = (keyboard_state){0};
+    e->buttons = 0;
+    e->consumer = 0;
+    e->failed = false;
+    e->pending_release = true;
+    e->release_index = 0;
+    e->rebuild = false;
+}
+void hid_engine_resume(hid_engine *e) {
+    e->mounted = true;
+    e->in_flight = false;
+    e->epoch++;
+    e->head = e->count = 0;
+    e->keyboard = (keyboard_state){0};
+    e->buttons = 0;
+    e->consumer = 0;
+    e->failed = false;
+    e->pending_release = true;
+    e->release_index = 0;
+    e->rebuild = false;
+}
 bool hid_engine_ready(const hid_engine *e) {
     return e->mounted && !e->pending_release && !e->failed;
 }

@@ -38,6 +38,9 @@ func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) er
 	if info == nil {
 		return protocol.ErrFrame
 	}
+	if candidate.KeepAwake == nil && info.Config != nil && info.Config.KeepAwake != nil {
+		candidate.KeepAwake = proto.Clone(info.Config.KeepAwake).(*pb.KeepAwake)
+	}
 	if field, validateErr := protocol.ValidateConfig(candidate, info.Paired); validateErr != nil {
 		return fmt.Errorf("invalid configuration field %d: %w", field, validateErr)
 	}

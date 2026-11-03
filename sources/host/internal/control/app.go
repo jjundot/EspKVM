@@ -49,7 +49,7 @@ func (a *App) State() web.State {
 	return state
 }
 func protobuf(message proto.Message) (json.RawMessage, error) {
-	b, e := protojson.MarshalOptions{UseProtoNames: true}.Marshal(message)
+	b, e := protojson.MarshalOptions{UseProtoNames: true, EmitDefaultValues: true}.Marshal(message)
 	return json.RawMessage(b), e
 }
 func (a *App) Operation(ctx context.Context, name string, body json.RawMessage) (any, error) {

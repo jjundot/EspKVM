@@ -19,7 +19,12 @@ message AuthOk   { bytes hmac = 1; }                     // 32B
 message AuthFail { uint32 reason = 1; }
 message ReleaseAll { uint32 id = 1; }
 message Released { uint32 id = 1; } // all three USB release transfers completed
-message Heartbeat { uint32 id = 1; bool reply = 2; }
+message Heartbeat {
+  uint32 id = 1;
+  bool reply = 2;
+  uint32 host_idle_s = 3; // Age of last physical HOST input, across all targets.
+  bool host_activity_known = 4; // False until physical input has been observed.
+}
 message SessionEnd { uint32 reason = 1; } // 1=authenticated replacement
 
 // 输入(加密)
@@ -47,6 +52,15 @@ message Status {
   uint32 kb_leds     = 4;   // bit0 Num, bit1 Caps, bit2 Scroll
   sint32 rssi        = 5;
   string fw_version  = 6;
+  uint32 keep_awake_state = 7; // 0=off,1=no heartbeat,2=HOST idle,3=C expired,4=waiting,5=keeping awake
+  uint32 keep_awake_moves = 8;
+}
+message KeepAwake {
+  bool enabled = 1;
+  uint32 interval_min_s = 2; // A; 1..86400
+  uint32 interval_max_s = 3; // B; A..86400
+  uint32 stop_after_s = 4; // C; 0=unlimited, defaults to 1800
+  uint32 host_active_within_s = 5; // D; 0=unconditional, including offline HOST
 }
 message Config {
   string name     = 1;
@@ -60,6 +74,7 @@ message Config {
   uint32 mask     = 9;
   uint32 tcp_port = 10;
   bool six_kro = 11; // 强制Boot描述符及8B报告,重启生效
+  KeepAwake keep_awake = 12; // Absent: preserve existing policy; default off, 30/60/1800/120.
 }
 
 message ConfigResult {

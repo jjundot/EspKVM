@@ -92,13 +92,17 @@ PY
  if [[ "$action" == rebuild ]]; then
   cmake --build --preset device --target device rebuild-hid-selftest
  else cmake --build --preset device --target device hid-selftest; fi
- package=$("$proto_python" tools/package_device.py build/device/hid-selftest build/device/flash/hid-selftest --auto)
+ for image in firmware hid-selftest; do
+  package=$("$proto_python" tools/package_device.py "build/device/$image" "build/device/flash/$image" --auto)
+  if [[ "$root" != "$work" ]]; then
+   mkdir -p "$root/build/device/flash/$image/${package##*/}" "$root/build/device/config"
+   rsync -a "$package/" "$root/build/device/flash/$image/${package##*/}/"
+  fi
+  printf 'Flash package: %s/build/device/flash/%s/%s\n' "$root" "$image" "${package##*/}"
+ done
  if [[ "$root" != "$work" ]]; then
-  mkdir -p "$root/build/device/flash/hid-selftest/${package##*/}" "$root/build/device/config"
-  rsync -a "$package/" "$root/build/device/flash/hid-selftest/${package##*/}/"
   rsync -a build/device/config/hid-selftest.sdkconfig "$root/build/device/config/"
  fi
- printf 'Flash package: %s/build/device/flash/hid-selftest/%s\n' "$root" "${package##*/}"
 else
  cd "$work"
  cmake --preset host -DPython3_EXECUTABLE="$proto_python" -DEK_GIT_SHA1="$git_sha1"
@@ -108,7 +112,7 @@ else
  if [[ "$root" != "$work" ]]; then
   mkdir -p "$root/build/host/bin"
   [[ $(realpath "$root/build/host/bin") == "$root/build/host/bin" ]] || { echo 'Refusing to sync outside build/host/bin.' >&2; exit 1; }
-  rsync -a --delete build/host/bin/ "$root/build/host/bin/"
+  rsync -a --delete --exclude='config.json' --exclude='config.json.*' build/host/bin/ "$root/build/host/bin/"
  fi
  printf 'Host binaries: %s/build/host/bin\n' "$root"
 fi

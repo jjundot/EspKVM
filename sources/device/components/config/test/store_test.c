@@ -36,6 +36,13 @@ int main(void){
  pb_ostream_t encoded=pb_ostream_from_buffer(slots[0]+16,496);assert(pb_encode(&encoded,ek_Config_fields,&c));lengths[0]=20+encoded.bytes_written;
  put32(slots[0]+lengths[0]-4,frame_crc32(slots[0],lengths[0]-4));
  assert(config_init()==ESP_OK);assert(config_get(&out,false));assert(out.has_password && !out.password[0] && out.has_psk);
+ // Existing configurations acquire defaults without losing credentials or requiring an erase.
+ assert(out.has_keep_awake && !out.keep_awake.enabled && out.keep_awake.interval_min_s==30 && out.keep_awake.interval_max_s==60 && out.keep_awake.stop_after_s==1800 && out.keep_awake.host_active_within_s==120);
+ out.keep_awake.enabled=true;out.keep_awake.interval_min_s=2;out.keep_awake.interval_max_s=5;out.keep_awake.stop_after_s=0;out.keep_awake.host_active_within_s=0;
+ assert(config_save(&out).code==0);assert(config_init()==ESP_OK);assert(config_get(&out,true));
+ assert(out.has_keep_awake && out.keep_awake.enabled && out.keep_awake.interval_min_s==2 && out.keep_awake.interval_max_s==5 && !out.keep_awake.stop_after_s && !out.keep_awake.host_active_within_s);
+ out.has_keep_awake=false;assert(config_save(&out).code==0);assert(config_get(&out,true));assert(out.keep_awake.enabled && out.keep_awake.interval_min_s==2);
+ out.keep_awake.interval_min_s=6;result=config_save(&out);assert(result.code==1 && result.field==12);
  assert(config_reset()==ESP_OK);assert(config_init()==ESP_OK);assert(!config_get(&out,true));
  puts("C optional credential merge, redaction, dual-slot and migration passed");return 0;
 }

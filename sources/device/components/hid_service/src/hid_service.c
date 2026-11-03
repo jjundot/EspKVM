@@ -3,6 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hid_engine.h"
+#include "keep_awake.h"
+#include "esp_random.h"
 #include "message_validate.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
@@ -26,7 +28,8 @@ static const uint8_t mouse_descriptor[] = {
 static const uint8_t consumer_descriptor[] = {TUD_HID_REPORT_DESC_CONSUMER()};
 #define CONFIGURATION_LENGTH (TUD_CONFIG_DESC_LEN + INTERFACE_COUNT * TUD_HID_DESC_LEN)
 #define CONFIGURATION(keyboard_size)                                                               \
-    TUD_CONFIG_DESCRIPTOR(1, INTERFACE_COUNT, 0, CONFIGURATION_LENGTH, 0, 100),                    \
+    TUD_CONFIG_DESCRIPTOR(1, INTERFACE_COUNT, 0, CONFIGURATION_LENGTH,                             \
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),                                \
         TUD_HID_DESCRIPTOR(KEYBOARD, 0, HID_ITF_PROTOCOL_KEYBOARD, keyboard_size, 0x81, 64, 1),    \
         TUD_HID_DESCRIPTOR(MOUSE, 0, HID_ITF_PROTOCOL_NONE, sizeof(mouse_descriptor), 0x82, 16,    \
                            1),                                                                     \
@@ -48,7 +51,9 @@ static const char *strings[] = {(const char[]){0x09, 0x04}, "Logitech", "USB Rec
 static const char *TAG = "ek_hid";
 
 static hid_engine engine;
+static keep_awake awake;
 static bool compatible;
+static bool usb_present, usb_suspended, wake_requested;
 static atomic_uchar leds;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t last_report[3][33], last_size[3], idle[3];
@@ -123,8 +128,11 @@ void tud_hid_report_complete_cb(uint8_t i, const uint8_t *report, uint16_t size)
 static void device_event(tinyusb_event_t *event, void *arg) {
     (void)arg;
     portENTER_CRITICAL(&lock);
-    if (event->id == TINYUSB_EVENT_ATTACHED || event->id == TINYUSB_EVENT_RESUMED) {
-        hid_engine_mount(&engine, true);
+    if (event->id == TINYUSB_EVENT_ATTACHED) {
+        usb_present = true;
+        usb_suspended = false;
+        wake_requested = false;
+        hid_engine_attach(&engine);
         engine.six_kro = compatible;
         memset(last_report, 0, sizeof(last_report));
         memset(idle, 0, sizeof(idle));
@@ -132,9 +140,29 @@ static void device_event(tinyusb_event_t *event, void *arg) {
         last_size[0] = compatible ? 8 : 33;
         last_size[1] = 7;
         last_size[2] = 2;
-    } else if (event->id == TINYUSB_EVENT_DETACHED || event->id == TINYUSB_EVENT_SUSPENDED)
-        hid_engine_mount(&engine, false);
+    } else if (event->id == TINYUSB_EVENT_SUSPENDED) {
+        usb_present = true;
+        usb_suspended = true;
+        wake_requested = false;
+        hid_engine_suspend(&engine);
+    } else if (event->id == TINYUSB_EVENT_RESUMED) {
+        usb_present = true;
+        usb_suspended = false;
+        wake_requested = false;
+        hid_engine_resume(&engine);
+    } else if (event->id == TINYUSB_EVENT_DETACHED) {
+        usb_present = false;
+        usb_suspended = false;
+        wake_requested = false;
+        hid_engine_detach(&engine);
+    }
     portEXIT_CRITICAL(&lock);
+    if (event->id == TINYUSB_EVENT_SUSPENDED)
+        ESP_LOGI(TAG, "USB host suspended; HID remains enumerated and remote wake is available");
+    else if (event->id == TINYUSB_EVENT_RESUMED)
+        ESP_LOGI(TAG, "USB host resumed; restoring neutral HID state");
+    else if (event->id == TINYUSB_EVENT_DETACHED)
+        ESP_LOGI(TAG, "USB HID host detached");
 }
 uint32_t hid_release(void) {
     portENTER_CRITICAL(&lock);
@@ -151,9 +179,23 @@ bool hid_ready(uint32_t generation) {
 }
 bool hid_mounted(void) {
     portENTER_CRITICAL(&lock);
-    bool value = engine.mounted;
+    bool value = usb_present;
     portEXIT_CRITICAL(&lock);
     return value;
+}
+void hid_wake_host(void) {
+    bool request = false;
+    portENTER_CRITICAL(&lock);
+    if (usb_present && usb_suspended && !wake_requested) {
+        wake_requested = true;
+        request = true;
+    }
+    portEXIT_CRITICAL(&lock);
+    if (request) {
+        esp_err_t err = tinyusb_remote_wakeup();
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "USB remote wake was not accepted by host: %s", esp_err_to_name(err));
+    }
 }
 bool hid_healthy(uint32_t generation) {
     portENTER_CRITICAL(&lock);
@@ -162,6 +204,23 @@ bool hid_healthy(uint32_t generation) {
     return value;
 }
 uint8_t hid_leds(void) { return atomic_load(&leds); }
+void hid_host_activity(uint32_t idle_s, bool known) {
+    portENTER_CRITICAL(&lock);
+    keep_awake_host(&awake, esp_timer_get_time() / 1000, idle_s, known);
+    portEXIT_CRITICAL(&lock);
+}
+void hid_host_disconnected(void) {
+    portENTER_CRITICAL(&lock);
+    awake.heartbeat_seen = false;
+    portEXIT_CRITICAL(&lock);
+}
+uint32_t hid_keep_awake_status(uint32_t *moves) {
+    portENTER_CRITICAL(&lock);
+    uint32_t state = keep_awake_state(&awake, esp_timer_get_time() / 1000);
+    *moves = awake.moves;
+    portEXIT_CRITICAL(&lock);
+    return state;
+}
 bool hid_submit(const ek_Msg *m, uint32_t generation) {
     if (!message_validate(m, EK_TO_DEVICE))
         return false;
@@ -191,8 +250,29 @@ bool hid_submit(const ek_Msg *m, uint32_t generation) {
     default:
         return false;
     }
+    uint64_t now = esp_timer_get_time() / 1000;
+    uint32_t random = esp_random();
     portENTER_CRITICAL(&lock);
-    bool ok = hid_engine_offer(&engine, &event, generation, esp_timer_get_time() / 1000);
+    if (usb_present && usb_suspended) {
+        bool changed = event.kind == HID_KEYBOARD
+            ? memcmp(&event.value.keyboard, &engine.keyboard, sizeof(engine.keyboard)) != 0
+            : event.kind == HID_MOUSE
+            ? event.value.mouse.buttons != engine.buttons || event.value.mouse.x || event.value.mouse.y ||
+              event.value.mouse.wheel || event.value.mouse.pan
+            : event.value.consumer != engine.consumer;
+        if (changed) keep_awake_user(&awake, now, random);
+        portEXIT_CRITICAL(&lock);
+        hid_wake_host();
+        return true;
+    }
+    bool changed = event.kind == HID_KEYBOARD
+        ? memcmp(&event.value.keyboard, &engine.keyboard, sizeof(engine.keyboard)) != 0
+        : event.kind == HID_MOUSE
+        ? event.value.mouse.buttons != engine.buttons || event.value.mouse.x || event.value.mouse.y ||
+          event.value.mouse.wheel || event.value.mouse.pan
+        : event.value.consumer != engine.consumer;
+    bool ok = hid_engine_offer(&engine, &event, generation, now);
+    if (ok && changed) keep_awake_user(&awake, now, random);
     portEXIT_CRITICAL(&lock);
     return ok;
 }
@@ -201,10 +281,23 @@ static void task(void *arg) {
     uint8_t report[33];
     for (;;) {
         uint64_t now = esp_timer_get_time() / 1000;
+        uint32_t random = esp_random();
         unsigned i = 0;
         size_t n = 0;
         bool send = false;
         portENTER_CRITICAL(&lock);
+        if (keep_awake_poll(&awake, now, random) && hid_engine_ready(&engine) &&
+            !engine.in_flight && !engine.count && !engine.buttons && !engine.consumer) {
+            keyboard_state empty = {0};
+            if (!memcmp(&engine.keyboard, &empty, sizeof(empty))) {
+                // Keep synthetic movement out of hid_submit: it must never renew C or A/B.
+                hid_event move = {.kind = HID_MOUSE};
+                move.value.mouse.x = (int)((random >> 8) % 7) - 3;
+                move.value.mouse.y = (int)((random >> 16) % 7) - 3;
+                if (!move.value.mouse.x && !move.value.mouse.y) move.value.mouse.x = 1;
+                if (hid_engine_offer(&engine, &move, engine.generation, now)) awake.moves++;
+            }
+        }
         if (!engine.in_flight && engine.mounted) {
             // Core chooses the next interface before endpoint readiness is tested. A failed
             // submission retains the FIFO item and every unconsumed movement remainder.
@@ -246,6 +339,12 @@ esp_err_t hid_service_start(const ek_Config *config) {
     if (!config->usb_vid || !config->usb_pid)
         return ESP_ERR_INVALID_ARG;
     compatible = config->six_kro;
+    ek_KeepAwake policy = config->has_keep_awake ? config->keep_awake :
+        (ek_KeepAwake){.interval_min_s = 30, .interval_max_s = 60,
+            .stop_after_s = 1800, .host_active_within_s = 120};
+    keep_awake_init(&awake, (keep_awake_config){policy.enabled, policy.interval_min_s,
+        policy.interval_max_s, policy.stop_after_s, policy.host_active_within_s},
+        esp_timer_get_time() / 1000, esp_random());
     engine.six_kro = compatible;
     engine.pending_release = true;
     device_descriptor.idVendor = config->usb_vid;

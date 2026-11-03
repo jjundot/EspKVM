@@ -10,6 +10,7 @@ import (
 	"github.com/jjundot/EspKVM/internal/switcher"
 	"google.golang.org/protobuf/proto"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -84,7 +85,7 @@ func TestDeviceOperationsDoNotExposeCredentials(t *testing.T) {
 		t.Fatal("single key accepted")
 	}
 	data, e := a.Store.Load()
-	if e != nil || len(data.Hotkey) != 2 || data.Hotkey[0] != 0xe0 {
+	if e != nil || !slices.Equal(data.Hotkey, input.DefaultHotkey()) {
 		t.Fatal("invalid hotkey persisted")
 	}
 }

@@ -53,14 +53,15 @@ type completion struct {
 	err        error
 }
 type Dispatcher struct {
-	capture  Capture
-	events   chan input.Event
-	commands chan command
-	complete chan completion
-	fault    chan struct{}
-	done     chan struct{}
-	view     atomic.Value
-	active   atomic.Pointer[link]
+	capture      Capture
+	events       chan input.Event
+	commands     chan command
+	complete     chan completion
+	fault        chan struct{}
+	done         chan struct{}
+	view         atomic.Value
+	active       atomic.Pointer[link]
+	lastPhysical atomic.Pointer[time.Time]
 }
 
 func New(c Capture) *Dispatcher {
@@ -74,6 +75,16 @@ func (d *Dispatcher) Input(e input.Event) bool {
 	case <-d.done:
 		return false
 	default:
+	}
+	if e.Kind == input.Fault {
+		d.lastPhysical.Store(nil)
+	} else if !e.Resync && !e.Synthetic && (e.Kind == input.Key || e.Kind == input.Button ||
+		e.Kind == input.Consumer || (e.Kind == input.Motion && (e.DX != 0 || e.DY != 0 || e.Wheel != 0 || e.Pan != 0))) {
+		at := e.Captured
+		if at.IsZero() {
+			at = time.Now()
+		}
+		d.lastPhysical.Store(&at)
 	}
 	select {
 	case d.events <- e:
@@ -89,6 +100,22 @@ func (d *Dispatcher) Input(e input.Event) bool {
 		}
 		return false
 	}
+}
+
+// HostActivity includes physical input on LOCAL and every DEVICE, before routing.
+func (d *Dispatcher) HostActivity() (uint32, bool) {
+	at := d.lastPhysical.Load()
+	if at == nil {
+		return 0, false
+	}
+	seconds := time.Since(*at) / time.Second
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds > time.Duration(^uint32(0)) {
+		return ^uint32(0), true
+	}
+	return uint32(seconds), true
 }
 func (d *Dispatcher) send(c command) error {
 	select {
@@ -425,6 +452,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			}
 			changed := physical.Apply(event)
 			stale := event.Suppressed || event.Resync || (!event.Captured.IsZero() && event.Captured.Before(activatedAt))
+			if event.Kind == input.Button && event.Code >= 3 {
+				input.DebugMousef("switcher target=%s phase=%s button=%d down=%t changed=%t stale=%t held-mask=0x%x suppressed=%t", view.Target, view.Phase, event.Code+1, event.Down, changed, stale, physical.Buttons(), suppressed[input.Token(input.Button, event.Code)])
+			}
 			if stale && event.Down {
 				suppressed[input.Token(event.Kind, event.Code)] = true
 			}
@@ -470,6 +500,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 					if suppressed[input.Token(input.Button, i)] {
 						buttons &^= 1 << i
 					}
+				}
+				if event.Kind == input.Button && event.Code >= 3 {
+					input.DebugMousef("outgoing target=%s phase=%s button=%d down=%t mask=0x%x", view.Target, view.Phase, event.Code+1, event.Down, buttons)
 				}
 				if event.Kind == input.Motion {
 					if !motion.Add(event, buttons, time.Now()) {
