@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/jjundot/EspKVM/internal/capture"
 	"github.com/jjundot/EspKVM/internal/config"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/devices"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
@@ -52,7 +53,15 @@ func protobuf(message proto.Message) (json.RawMessage, error) {
 	b, e := protojson.MarshalOptions{UseProtoNames: true, EmitDefaultValues: true}.Marshal(message)
 	return json.RawMessage(b), e
 }
-func (a *App) Operation(ctx context.Context, name string, body json.RawMessage) (any, error) {
+func (a *App) Operation(ctx context.Context, name string, body json.RawMessage) (result any, err error) {
+	debuglog.Printf("control", "operation=%s started", name)
+	defer func() {
+		if err != nil {
+			debuglog.Printf("control", "operation=%s failed: %v", name, err)
+		} else {
+			debuglog.Printf("control", "operation=%s completed", name)
+		}
+	}()
 	switch name {
 	case "recording":
 		var req struct {

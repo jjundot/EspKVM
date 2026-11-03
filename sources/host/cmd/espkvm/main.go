@@ -10,6 +10,7 @@ import (
 	"github.com/jjundot/EspKVM/internal/cli"
 	"github.com/jjundot/EspKVM/internal/config"
 	"github.com/jjundot/EspKVM/internal/control"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/devices"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/switcher"
@@ -37,9 +38,12 @@ func run() error {
 	bootstrapFile := flags.String("bootstrap-file", "", "create a private launch-URL file; never print the credential in logs")
 	captureInput := flags.Bool("capture", true, "capture physical input; false runs the authenticated control API only")
 	exitAfter := flags.Duration("exit-after", 0, "optional bounded diagnostic runtime")
+	debug := flags.Bool("debug", false, "enable diagnostic logging")
 	if e := flags.Parse(os.Args[1:]); e != nil {
 		return e
 	}
+	debuglog.SetEnabled(*debug)
+	debuglog.Printf("host", "starting version=%s capture=%t browser=%t", version, *captureInput, *browser)
 	if !*browser && *bootstrapFile == "" {
 		return errors.New("-browser=false requires -bootstrap-file for private authentication")
 	}
@@ -89,6 +93,7 @@ func run() error {
 		return e
 	}
 	defer listener.Close()
+	debuglog.Printf("host", "control API listening on %s", listener.Addr())
 	server := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	serving := make(chan error, 1)
 	go func() { serving <- server.Serve(listener) }()
@@ -126,6 +131,7 @@ func run() error {
 			for ctx.Err() == nil {
 				app.InputStatus("running")
 				e := source.Run(ctx, dispatcher.Input)
+				debuglog.Printf("capture", "input capture stopped: %v", e)
 				source.Local()
 				dispatcher.Input(input.Event{Kind: input.Fault, Reset: true})
 				if ctx.Err() != nil {

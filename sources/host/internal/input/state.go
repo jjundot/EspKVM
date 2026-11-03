@@ -20,6 +20,7 @@ const (
 	Removed
 	Fault
 	Boundary
+	Shortcut
 )
 
 type Event struct {

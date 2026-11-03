@@ -12,3 +12,10 @@
 .keep-awake-save-note{border-top:1px solid #2a394d;padding-top:12px}
 .keep-awake-status{grid-column:1/-1}.keep-awake-status small{display:block;color:#8292a6;margin-top:5px}
 .device-meta strong{overflow-wrap:anywhere}
+.topbar{padding:0 max(24px,calc((100% - 1120px)/2))}
+main{width:auto;max-width:1120px;margin:0 auto;padding:48px 24px}
+.device-meta .firmware-meta{grid-column:1/-1;min-width:0}
+.device-meta .firmware-value{white-space:nowrap;overflow-wrap:normal;letter-spacing:-.02em;font-size:11px}
+.keep-awake-last-move{display:block;color:#75859a;margin-top:5px;transition:color .18s ease,text-shadow .18s ease}
+.keep-awake-last-move.recent{color:#55dda5;text-shadow:0 0 10px #42d6a055}
+@media(max-width:600px){main{padding:32px 16px}}

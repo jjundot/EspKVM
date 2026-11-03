@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/keymap"
 	"golang.org/x/sys/windows"
@@ -70,6 +71,14 @@ type rawInput struct {
 	header rawHeader
 	mouse  rawMouse
 }
+type rawKeyboard struct {
+	makeCode, flags, reserved, vkey uint16
+	message, extra                  uint32
+}
+type rawKeyboardInput struct {
+	header   rawHeader
+	keyboard rawKeyboard
+}
 
 type windowsSource struct {
 	route           routing
@@ -79,6 +88,16 @@ type windowsSource struct {
 	wheel, pan      int32
 	wheelEpoch      uint64
 	active, clipped atomic.Bool
+	globalHotkey    atomic.Bool
+	hotkeyWindow    atomic.Uintptr
+	rawCtrlLeft     bool
+	rawCtrlRight    bool
+	rawAltLeft      bool
+	rawAltRight     bool
+	rawWDown        bool
+	rawComboActive  bool
+	rawKeyMu        sync.Mutex
+	chordButtons    uint8
 }
 
 var current atomic.Pointer[windowsSource]
@@ -86,9 +105,56 @@ var keyboardProc = syscall.NewCallback(keyboardCallback)
 var mouseProc = syscall.NewCallback(mouseCallback)
 var windowProc = syscall.NewCallback(windowCallback)
 
-func New() Source                                      { return &windowsSource{forwarded: map[uint32]winInput{}} }
-func (s *windowsSource) SetHotkey(keys []uint16) error { return s.route.setHotkey(keys) }
-func (s *windowsSource) SetRecording(active bool)      { s.route.setRecording(active) }
+func New() Source {
+	s := &windowsSource{forwarded: map[uint32]winInput{}}
+	s.globalHotkey.Store(true)
+	return s
+}
+func isDefaultHotkey(keys []uint16) bool {
+	if len(keys) != 3 {
+		return false
+	}
+	seen := map[uint16]bool{}
+	for _, key := range keys {
+		seen[key] = true
+	}
+	return len(seen) == 3 && seen[0xe0] && seen[0xe2] && seen[0x1a]
+}
+func (s *windowsSource) SetHotkey(keys []uint16) error {
+	if err := s.route.setHotkey(keys); err != nil {
+		return err
+	}
+	s.globalHotkey.Store(isDefaultHotkey(keys))
+	if window := s.hotkeyWindow.Load(); window != 0 {
+		user32.NewProc("PostMessageW").Call(window, 0x8001, 0, 0)
+	}
+	return nil
+}
+func (s *windowsSource) SetRecording(active bool) { s.route.setRecording(active) }
+
+const (
+	espkvmHotkeyID     = 0x4553
+	espkvmHotkeyUpdate = 0x8001
+	wmHotkey           = 0x0312
+	modAlt             = 0x0001
+	modControl         = 0x0002
+	modNoRepeat        = 0x4000
+	virtualKeyW        = 0x57
+)
+
+func (s *windowsSource) updateGlobalHotkey(window uintptr) {
+	unregister := user32.NewProc("UnregisterHotKey")
+	register := user32.NewProc("RegisterHotKey")
+	unregister.Call(window, espkvmHotkeyID)
+	if !s.globalHotkey.Load() {
+		return
+	}
+	if ok, _, err := register.Call(window, espkvmHotkeyID, modControl|modAlt|modNoRepeat, virtualKeyW); ok == 0 {
+		debuglog.Printf("capture", "RegisterHotKey Ctrl+Alt+W failed: %v", err)
+	} else {
+		debuglog.Printf("capture", "registered system Ctrl+Alt+W hotkey")
+	}
+}
 
 type keyInput struct {
 	vk, scan             uint16
@@ -190,8 +256,62 @@ func (s *windowsSource) releaseForwarded() error {
 func (s *windowsSource) fault() {
 	s.Local()
 	s.route.resetPhysical()
+	s.rawKeyMu.Lock()
+	s.rawCtrlLeft, s.rawCtrlRight = false, false
+	s.rawAltLeft, s.rawAltRight = false, false
+	s.rawWDown, s.rawComboActive = false, false
+	s.rawKeyMu.Unlock()
 	if s.sink != nil {
 		s.sink(input.Event{Kind: input.Fault, Reset: true})
+	}
+}
+func (s *windowsSource) observeRawKeyboard(key rawKeyboard) {
+	down := key.flags&1 == 0 // RI_KEY_BREAK
+	extended := key.flags&2 != 0
+	tracked := false
+	switch key.vkey {
+	case 0x11, 0xa2, 0xa3, 0x12, 0xa4, 0xa5, virtualKeyW:
+		tracked = true
+		debuglog.Printf("capture", "raw keyboard VK=0x%x flags=0x%x down=%t", key.vkey, key.flags, down)
+	}
+	s.rawKeyMu.Lock()
+	switch key.vkey {
+	case 0x11: // VK_CONTROL (the E0 flag distinguishes right Ctrl)
+		if extended {
+			s.rawCtrlRight = down
+		} else {
+			s.rawCtrlLeft = down
+		}
+	case 0xa2:
+		s.rawCtrlLeft = down
+	case 0xa3:
+		s.rawCtrlRight = down
+	case 0x12: // VK_MENU
+		if extended {
+			s.rawAltRight = down
+		} else {
+			s.rawAltLeft = down
+		}
+	case 0xa4:
+		s.rawAltLeft = down
+	case 0xa5:
+		s.rawAltRight = down
+	case virtualKeyW:
+		s.rawWDown = down
+	}
+	combo := (s.rawCtrlLeft || s.rawCtrlRight) && (s.rawAltLeft || s.rawAltRight) && s.rawWDown
+	trigger := combo && !s.rawComboActive
+	s.rawComboActive = combo
+	s.rawKeyMu.Unlock()
+	if tracked {
+		debuglog.Printf("capture", "raw hotkey state ctrl=%t alt=%t w=%t combo=%t", s.rawCtrlLeft || s.rawCtrlRight, s.rawAltLeft || s.rawAltRight, s.rawWDown, combo)
+	}
+	if trigger && s.globalHotkey.Load() && !s.route.recordingActive() && !s.route.recentHotkeyTrigger() && s.sink != nil {
+		s.route.markHotkeyTrigger()
+		debuglog.Printf("capture", "raw input recognized Ctrl+Alt+W")
+		if !s.sink(input.Event{Kind: input.Shortcut, Device: "windows-raw-hotkey", Captured: time.Now()}) {
+			s.Local()
+		}
 	}
 }
 func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
@@ -212,7 +332,6 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 		kind := input.Key
 		if button, found := keymap.WindowsBrowserMouseButton(raw.vk); found {
 			usage, ok, kind = button, true, input.Button
-			input.DebugMousef("WH_KEYBOARD_LL VK=0x%x scan=0x%x flags=0x%x -> XBUTTON%d down=%t", raw.vk, raw.scan, raw.flags, button-2, raw.flags&0x80 == 0)
 		}
 		if raw.vk == 0x13 {
 			usage = 0x48
@@ -225,7 +344,18 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 		}
 		if ok {
 			event := input.Event{Device: "windows-hooks", Kind: kind, Code: usage, Down: raw.flags&0x80 == 0, Captured: time.Now(), Synthetic: raw.flags&0x10 != 0}
+			if kind == input.Key && (usage == 0xe0 || usage == 0xe2 || usage == 0x1a) {
+				debuglog.Printf("capture", "low-level keyboard VK=0x%x scan=0x%x flags=0x%x usage=0x%x down=%t", raw.vk, raw.scan, raw.flags, usage, event.Down)
+			}
 			swallow := s.route.routeEvent(&event)
+			if kind == input.Key && usage == 0x1a && event.Down {
+				s.route.mu.Lock()
+				waiting := s.route.hotkey != nil && s.route.hotkey.Waiting()
+				s.route.mu.Unlock()
+				if waiting {
+					debuglog.Printf("capture", "low-level hook recognized complete shortcut")
+				}
+			}
 			token := input.Token(kind, usage)
 			s.mu.Lock()
 			if !swallow {
@@ -328,14 +458,30 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 			known = false
 		}
 		if known {
-			if button >= 3 {
-				input.DebugMousef("WH_MOUSE_LL wParam=0x%x mouseData=0x%x flags=0x%x -> XBUTTON%d down=%t", wparam, raw.data, raw.flags, button-2, down)
+			chord := false
+			if button == 3 || button == 4 {
+				controlHeld := s.route.controlHeld()
+				mask := uint8(1 << (button - 3))
+				s.mu.Lock()
+				if down && controlHeld {
+					s.chordButtons |= mask
+					chord = true
+				} else if !down && s.chordButtons&mask != 0 {
+					s.chordButtons &^= mask
+					chord = true
+				}
+				s.mu.Unlock()
 			}
 			event := input.Event{Device: "windows-hooks", Kind: input.Button, Code: button, Down: down, Captured: time.Now(), Synthetic: raw.flags&1 != 0}
+			if chord {
+				event.Suppressed = true
+			}
 			swallow := s.route.routeEvent(&event)
 			token := input.Token(input.Button, button)
 			s.mu.Lock()
-			if !swallow {
+			if chord {
+				delete(s.forwarded, token)
+			} else if !swallow {
 				if down {
 					s.forwarded[token] = mouseUp(button)
 				} else {
@@ -346,7 +492,16 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 			if !s.sink(event) {
 				s.Local()
 			}
-			if swallow {
+			if chord && down && s.sink != nil {
+				direction := uint16(0) // XBUTTON1 cycles forward; XBUTTON2 cycles backward.
+				if button == 4 {
+					direction = 1
+				}
+				if !s.sink(input.Event{Kind: input.Shortcut, Code: direction, Device: "windows-mouse-hotkey", Captured: time.Now()}) {
+					s.Local()
+				}
+			}
+			if swallow || chord {
 				return 1
 			}
 		} else {
@@ -363,6 +518,21 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 }
 func windowCallback(window uintptr, kind uint32, wparam, lparam uintptr) uintptr {
 	s := current.Load()
+	if s != nil && kind == espkvmHotkeyUpdate {
+		s.updateGlobalHotkey(window)
+		return 0
+	}
+	if s != nil && kind == wmHotkey && wparam == espkvmHotkeyID {
+		debuglog.Printf("capture", "received WM_HOTKEY")
+		if s.globalHotkey.Load() && !s.route.recentHotkeyTrigger() && !s.route.recordingActive() && s.sink != nil {
+			s.route.markHotkeyTrigger()
+			debuglog.Printf("capture", "dispatching WM_HOTKEY shortcut")
+			if !s.sink(input.Event{Kind: input.Shortcut, Device: "windows-global-hotkey", Captured: time.Now()}) {
+				s.Local()
+			}
+		}
+		return 0
+	}
 	if s != nil && kind == 0x2b1 && (wparam == 7 || wparam == 6) {
 		s.fault()
 	}
@@ -371,38 +541,43 @@ func windowCallback(window uintptr, kind uint32, wparam, lparam uintptr) uintptr
 		var raw rawInput
 		size := uint32(unsafe.Sizeof(raw))
 		n, _, _ := rawData.Call(lparam, 0x10000003, uintptr(unsafe.Pointer(&raw)), uintptr(unsafe.Pointer(&size)), unsafe.Sizeof(rawHeader{}))
-		if uint32(n) != ^uint32(0) && n >= unsafe.Sizeof(raw) && raw.header.kind == 0 {
-			event := input.Event{Device: "windows-hooks", Kind: input.Motion, Captured: time.Now()}
-			if raw.mouse.flags&1 == 0 {
-				event.DX = raw.mouse.dx
-				event.DY = raw.mouse.dy
+		if uint32(n) != ^uint32(0) && n >= unsafe.Sizeof(rawHeader{}) {
+			if raw.header.kind == 1 && n >= unsafe.Sizeof(rawKeyboardInput{}) {
+				s.observeRawKeyboard((*rawKeyboardInput)(unsafe.Pointer(&raw)).keyboard)
 			}
-			flags := uint16(raw.mouse.buttons)
-			data := int32(int16(raw.mouse.buttons >> 16))
-			s.mu.Lock()
-			changed := epoch != s.route.epoch.Load()
-			if s.wheelEpoch != epoch {
-				s.wheel = 0
-				s.pan = 0
-				s.wheelEpoch = epoch
-			}
-			if !changed && flags&0x400 != 0 {
-				s.wheel += data
-				event.Wheel = s.wheel / 120
-				s.wheel %= 120
-			}
-			if !changed && flags&0x800 != 0 {
-				s.pan += data
-				event.Pan = s.pan / 120
-				s.pan %= 120
-			}
-			s.mu.Unlock()
-			s.route.mu.Lock()
-			event.Suppressed = changed || s.route.transition || s.route.hotkey != nil && s.route.hotkey.Waiting()
-			s.route.mu.Unlock()
-			if event.DX != 0 || event.DY != 0 || event.Wheel != 0 || event.Pan != 0 {
-				if !s.sink(event) {
-					s.Local()
+			if raw.header.kind == 0 && n >= unsafe.Sizeof(raw) {
+				event := input.Event{Device: "windows-hooks", Kind: input.Motion, Captured: time.Now()}
+				if raw.mouse.flags&1 == 0 {
+					event.DX = raw.mouse.dx
+					event.DY = raw.mouse.dy
+				}
+				flags := uint16(raw.mouse.buttons)
+				data := int32(int16(raw.mouse.buttons >> 16))
+				s.mu.Lock()
+				changed := epoch != s.route.epoch.Load()
+				if s.wheelEpoch != epoch {
+					s.wheel = 0
+					s.pan = 0
+					s.wheelEpoch = epoch
+				}
+				if !changed && flags&0x400 != 0 {
+					s.wheel += data
+					event.Wheel = s.wheel / 120
+					s.wheel %= 120
+				}
+				if !changed && flags&0x800 != 0 {
+					s.pan += data
+					event.Pan = s.pan / 120
+					s.pan %= 120
+				}
+				s.mu.Unlock()
+				s.route.mu.Lock()
+				event.Suppressed = changed || s.route.transition || s.route.hotkey != nil && s.route.hotkey.Waiting()
+				s.route.mu.Unlock()
+				if event.DX != 0 || event.DY != 0 || event.Wheel != 0 || event.Pan != 0 {
+					if !s.sink(event) {
+						s.Local()
+					}
 				}
 			}
 		}
@@ -450,6 +625,12 @@ func (s *windowsSource) Run(ctx context.Context, sink func(input.Event) bool) er
 	if window == 0 {
 		return e
 	}
+	s.hotkeyWindow.Store(window)
+	s.updateGlobalHotkey(window)
+	defer func() {
+		user32.NewProc("UnregisterHotKey").Call(window, espkvmHotkeyID)
+		s.hotkeyWindow.Store(0)
+	}()
 	defer user32.NewProc("DestroyWindow").Call(window)
 	type rawDevice struct {
 		page, usage uint16
@@ -464,6 +645,17 @@ func (s *windowsSource) Run(ctx context.Context, sink func(input.Event) bool) er
 		device.flags = 1
 		device.target = 0
 		user32.NewProc("RegisterRawInputDevices").Call(uintptr(unsafe.Pointer(&device)), 1, unsafe.Sizeof(device))
+	}()
+	keyboardDevice := rawDevice{page: 1, usage: 6, flags: 0x100, target: window}
+	if ok, _, err := user32.NewProc("RegisterRawInputDevices").Call(uintptr(unsafe.Pointer(&keyboardDevice)), 1, unsafe.Sizeof(keyboardDevice)); ok == 0 {
+		debuglog.Printf("capture", "RegisterRawInputDevices keyboard failed: %v", err)
+	} else {
+		debuglog.Printf("capture", "registered background raw keyboard input")
+	}
+	defer func() {
+		keyboardDevice.flags = 1
+		keyboardDevice.target = 0
+		user32.NewProc("RegisterRawInputDevices").Call(uintptr(unsafe.Pointer(&keyboardDevice)), 1, unsafe.Sizeof(keyboardDevice))
 	}()
 	keyboard, _, e := setHook.Call(13, keyboardProc, module, 0)
 	if keyboard == 0 {

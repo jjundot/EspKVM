@@ -4,6 +4,7 @@ package switcher
 import (
 	"context"
 	"errors"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"sync/atomic"
@@ -268,6 +269,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		publish()
 	}
 	request = func(id string, fault bool) {
+		debuglog.Printf("switcher", "request target=%s fault=%t current=%s phase=%s", id, fault, view.Target, view.Phase)
 		if id == "" {
 			id = Local
 		}
@@ -327,14 +329,13 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		}
 		publish()
 	}
-	cycle := func() {
+	cycle := func(direction int) {
 		targets := []string{Local}
 		for _, id := range order {
 			if l := links[id]; l != nil && l.ready {
 				targets = append(targets, id)
 			}
 		}
-		next := 0
 		base := view.Target
 		if view.Phase != "idle" && desired != "" {
 			base = desired
@@ -342,12 +343,20 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		if queued != "" {
 			base = queued
 		}
+		index := -1
 		for i, id := range targets {
 			if id == base {
-				next = (i + 1) % len(targets)
+				index = i
 				break
 			}
 		}
+		next := 0
+		if index >= 0 {
+			next = (index + direction + len(targets)) % len(targets)
+		} else if direction < 0 {
+			next = len(targets) - 1
+		}
+		debuglog.Printf("switcher", "cycle direction=%d from=%s to=%s available=%v", direction, base, targets[next], targets)
 		request(targets[next], false)
 	}
 	for {
@@ -447,14 +456,20 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				}
 				continue
 			}
+			if event.Kind == input.Shortcut {
+				debuglog.Printf("switcher", "shortcut event code=%d target=%s", event.Code, view.Target)
+				if event.Code == 1 {
+					cycle(-1)
+				} else {
+					cycle(1)
+				}
+				continue
+			}
 			if event.Kind != input.Motion {
 				flush()
 			}
 			changed := physical.Apply(event)
 			stale := event.Suppressed || event.Resync || (!event.Captured.IsZero() && event.Captured.Before(activatedAt))
-			if event.Kind == input.Button && event.Code >= 3 {
-				input.DebugMousef("switcher target=%s phase=%s button=%d down=%t changed=%t stale=%t held-mask=0x%x suppressed=%t", view.Target, view.Phase, event.Code+1, event.Down, changed, stale, physical.Buttons(), suppressed[input.Token(input.Button, event.Code)])
-			}
 			if stale && event.Down {
 				suppressed[input.Token(event.Kind, event.Code)] = true
 			}
@@ -477,7 +492,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				suppress()
 			}
 			if trigger {
-				cycle()
+				cycle(1)
 			}
 			if view.Phase == "waiting-release" {
 				activate()
@@ -500,9 +515,6 @@ func (d *Dispatcher) Run(ctx context.Context) {
 					if suppressed[input.Token(input.Button, i)] {
 						buttons &^= 1 << i
 					}
-				}
-				if event.Kind == input.Button && event.Code >= 3 {
-					input.DebugMousef("outgoing target=%s phase=%s button=%d down=%t mask=0x%x", view.Target, view.Phase, event.Code+1, event.Down, buttons)
 				}
 				if event.Kind == input.Motion {
 					if !motion.Add(event, buttons, time.Now()) {

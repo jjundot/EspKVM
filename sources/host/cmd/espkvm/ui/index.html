@@ -10,10 +10,10 @@
     <section class="login-card"><p class="eyebrow">SECURE LOCAL ACCESS</p><h1>登录 EspKVM</h1><form id="login-form"><label>登录密码<input name="password" type="password" required maxlength="128" autocomplete="current-password" autofocus></label><p id="login-error" class="login-error" role="alert" hidden></p><button class="button primary" id="login-submit" type="submit">登录</button></form></section>
   </main>
   <main id="app-shell" hidden>
-    <section class="intro"><div><p class="eyebrow">LOCAL HOST</p><h1>设备控制台</h1><p class="muted">管理已配对的 EspKVM 设备，并选择当前键鼠目标。</p></div><button class="button primary" id="add-device">＋ 添加设备</button></section>
+    <section class="intro"><div><p class="eyebrow">LOCAL HOST</p><h1>设备控制台</h1></div><button class="button primary" id="add-device">＋ 添加设备</button></section>
     <div id="notice" class="notice" hidden></div>
     <section class="panel switch-panel"><div class="section-heading"><div><p class="eyebrow">INPUT ROUTING</p><h2>输入目标</h2></div><button class="button subtle" id="record-hotkey">录制切换热键</button></div><div id="targets" class="target-grid"></div><p id="switch-status" class="muted small"></p></section>
-    <section class="section-heading devices-heading"><div><p class="eyebrow">PAIRED DEVICES</p><h2>设备</h2><p class="muted small">“从其他主机接管”仅在设备被另一台主机占用时使用；它不会切换上方的键鼠输入目标。</p></div><span id="device-count" class="muted small"></span></section>
+    <section class="section-heading devices-heading"><div><p class="eyebrow">PAIRED DEVICES</p><h2>设备</h2></div><span id="device-count" class="muted small"></span></section>
     <div id="devices" class="device-grid"></div>
     <section id="pending-section" class="panel" hidden><div class="section-heading"><div><p class="eyebrow">SETUP VERIFICATION</p><h2>配网待验证</h2><p class="muted small">写入前会先暂存新旧连接信息。验证新连接成功后，EspKVM 才会正式更新本机配置；如果写入结果未知，也可在这里核对设备状态。</p></div></div><div id="pending-list"></div></section>
     <footer>EspKVM · 本地访问仅限此电脑</footer>

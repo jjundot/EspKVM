@@ -5,6 +5,7 @@ import (
 	"github.com/jjundot/EspKVM/internal/input"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type routing struct {
@@ -15,6 +16,7 @@ type routing struct {
 	remote, transition bool
 	recording          bool
 	suppressed         map[uint32]bool
+	lastHotkeyTrigger  atomic.Int64
 }
 
 func (g *routing) init() {
@@ -35,6 +37,9 @@ func (g *routing) routeEvent(e *input.Event) bool {
 	wasWaiting := g.hotkey.Waiting()
 	g.physical.Apply(*e)
 	trigger := g.hotkey.Observe(&g.physical, e.Resync || g.recording)
+	if trigger {
+		g.lastHotkeyTrigger.Store(time.Now().UnixNano())
+	}
 	token := input.Token(e.Kind, e.Code)
 	swallow := g.remote || g.transition || wasWaiting || trigger || g.suppressed[token]
 	e.Suppressed = g.transition || wasWaiting || trigger || g.suppressed[token]
@@ -47,6 +52,21 @@ func (g *routing) routeEvent(e *input.Event) bool {
 		delete(g.suppressed, token)
 	}
 	return swallow
+}
+func (g *routing) recentHotkeyTrigger() bool {
+	at := g.lastHotkeyTrigger.Load()
+	return at != 0 && time.Since(time.Unix(0, at)) < 200*time.Millisecond
+}
+func (g *routing) markHotkeyTrigger() { g.lastHotkeyTrigger.Store(time.Now().UnixNano()) }
+func (g *routing) recordingActive() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.recording
+}
+func (g *routing) controlHeld() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.physical.Held(input.Key, 0xe0) || g.physical.Held(input.Key, 0xe4)
 }
 func (g *routing) local() {
 	g.epoch.Add(1)

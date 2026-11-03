@@ -3,6 +3,9 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 let csrf = sessionStorage.getItem('espkvm-csrf') || '';
 let state = null;
 let refreshHandle = null;
+let streamController = null;
+let streamRetryHandle = null;
+let streamRetryDelay = 1000;
 const notice = (message = '', kind = 'error') => {
   const openDialog = $('dialog[open]');
   const inline = openDialog?.querySelector('.dialog-feedback');
@@ -40,6 +43,7 @@ async function boot() {
   catch (e) { sessionStorage.removeItem('espkvm-csrf'); csrf=''; showLogin(); }
 }
 function showLogin(message = '') {
+  stopStateEvents();
   $('#app-shell').hidden = true; $('#login-screen').hidden = false; $('#change-password').hidden = true;
   $('#input-status').textContent = '等待登录'; $('#input-dot').className = '';
   $('#login-error').textContent = message; $('#login-error').hidden = !message;
@@ -48,9 +52,67 @@ async function enterApp() {
   await api('session');
   $('#login-screen').hidden = true; $('#app-shell').hidden = false; $('#change-password').hidden = false;
   await refresh();
-  if (!refreshHandle) refreshHandle = setInterval(() => refresh().catch(() => {}), 1200);
+  connectStateEvents();
 }
 function showError(e) { toast(String(e.message || e).trim(), 'error'); }
+function stopStateEvents() {
+  streamController?.abort(); streamController = null;
+  if (streamRetryHandle) clearTimeout(streamRetryHandle);
+  streamRetryHandle = null;
+  if (refreshHandle) clearInterval(refreshHandle);
+  refreshHandle = null;
+}
+function startFallbackRefresh() {
+  if (!refreshHandle) refreshHandle = setInterval(() => refresh().catch(() => {}), 3000);
+}
+function connectStateEvents() {
+  if (!csrf || streamController) return;
+  if (streamRetryHandle) clearTimeout(streamRetryHandle);
+  streamRetryHandle = null;
+  const controller = new AbortController();
+  streamController = controller;
+  (async () => {
+    try {
+      const response = await fetch('/api/events', {headers:{'X-CSRF-Token':csrf},signal:controller.signal,cache:'no-store'});
+      if (response.status === 401 || response.status === 403) {
+        stopStateEvents(); sessionStorage.removeItem('espkvm-csrf'); csrf=''; showLogin('登录已过期，请重新登录。'); return;
+      }
+      if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
+      if (refreshHandle) clearInterval(refreshHandle);
+      refreshHandle = null; streamRetryDelay = 1000;
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let buffer = '';
+      while (!controller.signal.aborted) {
+        const {value,done} = await reader.read();
+        if (done) throw new Error('SSE stream closed');
+        buffer += decoder.decode(value,{stream:true}).replace(/\r\n/g,'\n');
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0,boundary); buffer = buffer.slice(boundary+2);
+          let eventName = 'message'; const data = [];
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+          }
+          if (eventName === 'state' && data.length) {
+            try { state = JSON.parse(data.join('\n')); render(); }
+            catch (e) { console.warn('Invalid EspKVM state event',e); }
+          }
+        }
+      }
+    } catch (e) {
+      if (controller.signal.aborted) return;
+      startFallbackRefresh();
+    } finally {
+      if (streamController === controller) streamController = null;
+      if (!controller.signal.aborted && csrf) {
+        const delay = streamRetryDelay;
+        streamRetryDelay = Math.min(streamRetryDelay * 2, 10000);
+        streamRetryHandle = setTimeout(connectStateEvents,delay);
+      }
+    }
+  })();
+}
 function serialStatus(message, kind = 'info') { const el=$('#serial-message'); el.textContent=message; el.dataset.kind=kind; }
 async function act(fn, success = '', button = null) {
   const originalText = button?.textContent;
@@ -101,6 +163,13 @@ function keepAwakeLabel(d) {
   if (!d.connected) return '设备未连接';
   return ['未启用','暂停：HOST 心跳超时','暂停：HOST 无近期操作','已停止：设备空闲超过 C','等待空闲间隔','保持中'][d.keep_awake_state] || '未知';
 }
+function keepAwakeMoveMarkup(d) {
+  const timestamp = Date.parse(d.keep_awake_last_move_at || '');
+  if (!Number.isFinite(timestamp)) return '<small class="keep-awake-last-move">尚无模拟移动</small>';
+  const age = Date.now() - timestamp;
+  const time = new Date(timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  return `<small class="keep-awake-last-move ${age >= 0 && age < 20000 ? 'recent' : ''}">上次模拟移动 ${time}</small>`;
+}
 function setupKeepAwake(form, container) {
   const fields=document.createElement('fieldset'); fields.className='keep-awake-fields';
   fields.innerHTML=`<legend>防休眠策略</legend><label class="check"><input name="keepAwakeEnabled" type="checkbox">启用此设备的防休眠</label>
@@ -144,13 +213,14 @@ function render() {
   if (!state) return;
   const input = $('#input-status'), dot = $('#input-dot'); input.textContent = state.input || '未知'; dot.className = state.input === 'running' ? 'ok' : '';
   const sw = state.switch || {}, current = sw.target || 'LOCAL';
-  $('#switch-status').textContent = sw.recording ? '正在录制：按下并释放一组修饰键组合。再次点击按钮结束录制。' : `切换快捷键：${hotkeyLabel(state.hotkey)} · 当前目标：${targetLabel(current)}${sw.phase && sw.phase !== 'idle' ? ` · ${sw.phase}` : ''}`;
+  const rdpFallback = /win/i.test(navigator.platform) ? ' · RDP 内：Ctrl + 侧键 1 向前，侧键 2 向后' : '';
+  $('#switch-status').textContent = sw.recording ? '正在录制：按下并释放一组修饰键组合。再次点击按钮结束录制。' : `切换快捷键：${hotkeyLabel(state.hotkey)}${rdpFallback} · 当前目标：${targetLabel(current)}${sw.phase && sw.phase !== 'idle' ? ` · ${sw.phase}` : ''}`;
   $('#record-hotkey').textContent = sw.recording ? '结束录制' : '录制切换热键';
   const targets = [{id:'LOCAL', name:'本机', ready:true, status:'本地输入'}, ...state.devices.map(d => ({id:d.id,name:d.name || d.id,ready:d.enabled && d.connected && d.usb,status:!d.enabled?'设备已禁用':!d.connected?'等待 TCP 连接':!d.usb?'TCP 在线 · 等待 USB HID 枚举':'TCP 与 USB HID 已就绪'}))];
   $('#targets').innerHTML = targets.map(t => `<button class="target ${current===t.id?'active':''}" data-target="${esc(t.id)}"><i class="dot ${t.ready?'ok':''}"></i><span>${esc(t.name)}<small>${esc(t.status)}</small></span></button>`).join('');
   $$('[data-target]').forEach(b => b.onclick = () => act(() => api('target',{id:b.dataset.target}), `${targetLabel(b.dataset.target)}已设为输入目标。` , b));
   const devices = $('#devices'); $('#device-count').textContent = `${state.devices.length} 台`;
-  devices.innerHTML = state.devices.length ? state.devices.map(d => `<article class="device"><div class="device-head"><i class="dot ${d.connected?'ok':''}"></i><span class="device-name">${esc(d.name || d.id)}</span><button class="icon-button edit-device" data-id="${esc(d.id)}" title="编辑">⋯</button></div><div class="device-ip">${esc(d.id)} · ${esc(d.ip)}:${d.port}</div><div class="device-meta"><span>TCP 连接<strong>${d.connected?'已连接':'未连接'}</strong></span><span>USB HID<strong>${d.usb?'已就绪':'未枚举'}</strong></span><span>Wi-Fi 信号<strong>${d.rssi || '—'} dBm</strong></span><span>设备固件<strong>${esc(d.firmware_version || firmwareLabel(d.firmware))}</strong></span><span>往返延迟<strong>${d.rtt?.p50_ns ? (d.rtt.p50_ns/1e6).toFixed(1)+' ms':'—'}</strong></span><span class="keep-awake-status">防休眠<strong>${esc(keepAwakeLabel(d))}</strong><small>本次启动已模拟移动 ${Number(d.keep_awake_moves||0)} 次</small></span></div>${d.error?`<p class="small error-text">${esc(d.error)}</p>`:''}<div class="device-actions"><button class="button take-device" data-id="${esc(d.id)}" ${d.connected?'disabled':''} title="当设备被另一台主机占用时，请求让本机替换其会话；不切换键鼠目标">${d.connected?'本机已连接':'从其他主机接管'}</button><button class="button serial-provision" data-id="${esc(d.id)}">串口配网</button><button class="button config-device" data-id="${esc(d.id)}">在线配置</button><button class="button delete-device danger" data-id="${esc(d.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有设备。添加设备后，可在这里管理连接和输入目标。</div>';
+  devices.innerHTML = state.devices.length ? state.devices.map(d => `<article class="device"><div class="device-head"><i class="dot ${d.connected?'ok':''}"></i><span class="device-name">${esc(d.name || d.id)}</span><button class="icon-button edit-device" data-id="${esc(d.id)}" title="编辑">⋯</button></div><div class="device-ip">${esc(d.id)} · ${esc(d.ip)}:${d.port}</div><div class="device-meta"><span>TCP 连接<strong>${d.connected?'已连接':'未连接'}</strong></span><span>USB HID<strong>${d.usb?'已就绪':'未枚举'}</strong></span><span>Wi-Fi 信号<strong>${d.rssi || '—'} dBm</strong></span><span class="firmware-meta">设备固件<strong class="firmware-value">${esc(d.firmware_version || firmwareLabel(d.firmware))}</strong></span><span>往返延迟<strong>${d.rtt?.p50_ns ? (d.rtt.p50_ns/1e6).toFixed(1)+' ms':'—'}</strong></span><span class="keep-awake-status">防休眠<strong>${esc(keepAwakeLabel(d))}</strong>${keepAwakeMoveMarkup(d)}</span></div>${d.error?`<p class="small error-text">${esc(d.error)}</p>`:''}<div class="device-actions"><button class="button take-device" data-id="${esc(d.id)}" ${d.connected?'disabled':''} title="当设备被另一台主机占用时，请求让本机替换其会话；不切换键鼠目标">${d.connected?'本机已连接':'从其他主机接管'}</button><button class="button serial-provision" data-id="${esc(d.id)}">串口配网</button><button class="button config-device" data-id="${esc(d.id)}">在线配置</button><button class="button delete-device danger" data-id="${esc(d.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有设备。添加设备后，可在这里管理连接和输入目标。</div>';
   $$('.edit-device').forEach(b => b.onclick = () => editDevice(b.dataset.id));
   $$('.take-device:not(:disabled)').forEach(b => b.onclick = () => { if (confirm('如果设备正由另一台 EspKVM 主机控制，这会请求断开该会话并让本机连接。它不会切换当前键鼠输入目标。继续？')) act(() => api('takeover',{id:b.dataset.id}), '接管请求已发送；设备连回本机后，还需在上方选择输入目标。', b); });
   $$('.serial-provision').forEach(b => b.onclick = () => openSerialProvision(b.dataset.id, b));
@@ -167,6 +237,9 @@ $('#add-device').onclick = () => { notice(''); const f=$('#device-form'); f.rese
 $('#close-device-dialog').onclick = () => $('#device-dialog').close();
 $('#close-config-dialog').onclick = () => $('#config-dialog').close();
 $('#close-serial-dialog').onclick = () => $('#serial-dialog').close();
+document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('mousedown', event => {
+  if (event.button === 0 && event.target === dialog && dialog.open) dialog.close();
+}));
 $('#generate-psk').onclick = e => { const bytes=crypto.getRandomValues(new Uint8Array(16)); $('#device-form').elements.psk.value=[...bytes].map(b=>b.toString(16).padStart(2,'0')).join(''); toast('已生成新的 16 字节随机 PSK。'); };
 function editDevice(id) { const d=state.devices.find(x=>x.id===id); if(!d)return; const f=$('#device-form'); f.reset(); f.elements.originalId.value=d.id; f.elements.id.value=d.id; f.elements.id.disabled=true; f.elements.name.value=d.name; f.elements.ip.value=d.ip; f.elements.port.value=d.port; f.elements.psk.value=''; f.elements.enabled.checked=d.enabled; $('#dialog-title').textContent='编辑设备'; $('#device-dialog').showModal(); }
 $('#device-form').onsubmit = e => { if(e.submitter?.value==='cancel')return; e.preventDefault(); const f=e.currentTarget.elements; const device={id:f.id.value,name:f.name.value,ip:f.ip.value,port:Number(f.port.value),psk:f.psk.value,enabled:f.enabled.checked}; act(async()=>{await api('device-save',device); $('#device-dialog').close();}, '设备信息已保存。本机正在尝试连接；首次配网请在设备卡上点击“串口配网”。', e.submitter); };

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/jjundot/EspKVM/internal/config"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"github.com/jjundot/EspKVM/internal/session"
@@ -20,24 +21,25 @@ import (
 )
 
 type View struct {
-	Firmware        uint32      `json:"firmware"`
-	FirmwareVersion string      `json:"firmware_version"`
-	KeepAwakeState  uint32      `json:"keep_awake_state"`
-	KeepAwakeMoves  uint32      `json:"keep_awake_moves"`
-	MAC             string      `json:"mac"`
-	Uptime          uint32      `json:"uptime_s"`
-	ID              string      `json:"id"`
-	Name            string      `json:"name"`
-	IP              string      `json:"ip"`
-	Port            uint16      `json:"port"`
-	Enabled         bool        `json:"enabled"`
-	Connected       bool        `json:"connected"`
-	USB             bool        `json:"usb"`
-	RSSI            int32       `json:"rssi"`
-	LEDs            uint32      `json:"leds"`
-	LastValid       time.Time   `json:"last_valid,omitempty"`
-	RTT             session.RTT `json:"rtt"`
-	Error           string      `json:"error,omitempty"`
+	Firmware            uint32      `json:"firmware"`
+	FirmwareVersion     string      `json:"firmware_version"`
+	KeepAwakeState      uint32      `json:"keep_awake_state"`
+	KeepAwakeMoves      uint32      `json:"keep_awake_moves"`
+	KeepAwakeLastMoveAt time.Time   `json:"keep_awake_last_move_at,omitempty"`
+	MAC                 string      `json:"mac"`
+	Uptime              uint32      `json:"uptime_s"`
+	ID                  string      `json:"id"`
+	Name                string      `json:"name"`
+	IP                  string      `json:"ip"`
+	Port                uint16      `json:"port"`
+	Enabled             bool        `json:"enabled"`
+	Connected           bool        `json:"connected"`
+	USB                 bool        `json:"usb"`
+	RSSI                int32       `json:"rssi"`
+	LEDs                uint32      `json:"leds"`
+	LastValid           time.Time   `json:"last_valid,omitempty"`
+	RTT                 session.RTT `json:"rtt"`
+	Error               string      `json:"error,omitempty"`
 }
 type reply struct {
 	session *session.Session
@@ -208,7 +210,9 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 			takeover = true
 		default:
 		}
-		conn, e := session.DialWithOptions(ctx, net.JoinHostPort(r.device.IP, strconv.Itoa(int(r.device.Port))), key, session.Options{Owner: m.owner, Takeover: takeover})
+		address := net.JoinHostPort(r.device.IP, strconv.Itoa(int(r.device.Port)))
+		debuglog.Printf("device", "connecting id=%s address=%s takeover=%t attempt=%d", r.device.ID, address, takeover, attempt+1)
+		conn, e := session.DialWithOptions(ctx, address, key, session.Options{Owner: m.owner, Takeover: takeover})
 		takeover = false
 		if e == nil {
 			m.mu.Lock()
@@ -230,6 +234,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 			r.view.Firmware = conn.Challenge.FwVer
 			r.view.FirmwareVersion = conn.Challenge.FwVersion
 			r.view.MAC = net.HardwareAddr(conn.Challenge.Mac).String()
+			debuglog.Printf("device", "connected id=%s firmware=%s", r.device.ID, conn.Challenge.FwVersion)
 			m.mu.Unlock()
 			attempt = 0
 			e = conn.Run(ctx, func(message *pb.Msg) {
@@ -240,6 +245,13 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 				}
 				r.view.LastValid = time.Now()
 				if s := message.GetStatus(); s != nil {
+					restarted := r.view.Uptime > 0 && s.UptimeS < r.view.Uptime
+					if restarted {
+						r.view.KeepAwakeLastMoveAt = time.Time{}
+					}
+					if s.KeepAwakeMoves > r.view.KeepAwakeMoves || restarted && s.KeepAwakeMoves > 0 {
+						r.view.KeepAwakeLastMoveAt = time.Now()
+					}
 					r.view.KeepAwakeState = s.KeepAwakeState
 					r.view.KeepAwakeMoves = s.KeepAwakeMoves
 					r.view.Firmware = s.FwVer
@@ -251,6 +263,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 					r.view.RSSI = s.Rssi
 					r.view.LEDs = s.KbLeds
 					if err := m.dispatcher.Attach(r.device.ID, conn, s.UsbMounted); err != nil {
+						debuglog.Printf("device", "attach failed id=%s usb=%t error=%v", r.device.ID, s.UsbMounted, err)
 						conn.Close()
 					}
 				}
@@ -270,6 +283,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 			}
 			m.mu.Unlock()
 			m.dispatcher.Detach(r.device.ID, conn)
+			debuglog.Printf("device", "disconnected id=%s error=%v", r.device.ID, e)
 		}
 		if ctx.Err() != nil {
 			return
