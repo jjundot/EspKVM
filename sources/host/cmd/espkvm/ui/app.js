@@ -214,7 +214,7 @@ function render() {
   const input = $('#input-status'), dot = $('#input-dot'); input.textContent = state.input || '未知'; dot.className = state.input === 'running' ? 'ok' : '';
   const sw = state.switch || {}, current = sw.target || 'LOCAL';
   const rdpFallback = /win/i.test(navigator.platform) ? ' · RDP 内：Ctrl + 侧键 1 向前，侧键 2 向后' : '';
-  $('#switch-status').textContent = sw.recording ? '正在录制：按下并释放一组修饰键组合。再次点击按钮结束录制。' : `切换快捷键：${hotkeyLabel(state.hotkey)}${rdpFallback} · 当前目标：${targetLabel(current)}${sw.phase && sw.phase !== 'idle' ? ` · ${sw.phase}` : ''}`;
+  $('#switch-status').textContent = sw.recording ? '正在录制：按下并释放一组修饰键组合。再次点击按钮结束录制。' : `切换快捷键：${hotkeyLabel(state.hotkey)}${rdpFallback} · 当前目标：${targetLabel(current)}${sw.phase && sw.phase !== 'idle' ? ` · ${sw.phase}` : ''}${sw.warning ? ` · ⚠ ${sw.warning}` : ''}`;
   $('#record-hotkey').textContent = sw.recording ? '结束录制' : '录制切换热键';
   const targets = [{id:'LOCAL', name:'本机', ready:true, status:'本地输入'}, ...state.devices.map(d => ({id:d.id,name:d.name || d.id,ready:d.enabled && d.connected && d.usb,status:!d.enabled?'设备已禁用':!d.connected?'等待 TCP 连接':!d.usb?'TCP 在线 · 等待 USB HID 枚举':d.usb_sleeping?'目标机睡眠中 · 切换后操作键鼠可唤醒':'TCP 与 USB HID 已就绪'}))];
   $('#targets').innerHTML = targets.map(t => `<button class="target ${current===t.id?'active':''}" data-target="${esc(t.id)}"><i class="dot ${t.ready?'ok':''}"></i><span>${esc(t.name)}<small>${esc(t.status)}</small></span></button>`).join('');

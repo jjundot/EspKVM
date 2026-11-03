@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,16 @@ import (
 
 type linuxDevice struct {
 	fd               int
-	path             string
+	path, name       string
 	keys             [96]byte
 	delivered        [96]byte
 	pending          []input.Event
 	dropped, grabbed bool
 	boundary         bool
+	// foreign: another program holds EVIOCGRAB (keyd, input-remapper, a VM), so
+	// neither we nor the desktop receive its events. grabLater: it appeared in
+	// REMOTE with keys held and is grabbed at its next all-released boundary.
+	foreign, grabLater bool
 }
 type linuxSource struct {
 	boundaryEvents       []input.Event
@@ -34,6 +39,7 @@ type linuxSource struct {
 	remote               bool
 	requested, confirmed bool
 	epoch                uint64
+	warning              string
 	route                routing
 }
 
@@ -114,17 +120,93 @@ func syncDevice(d *linuxDevice, keys [96]byte, resync bool) []input.Event {
 	d.keys = keys
 	return events
 }
+func anyKey(keys [96]byte) bool {
+	for _, b := range keys {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
 func (s *linuxSource) localLocked() {
 	for _, d := range s.devices {
 		if d.grabbed {
 			grabDevice(d, false)
 			d.grabbed = false
 		}
+		d.grabLater = false
 	}
 	s.remote = false
 	s.requested = false
 	s.confirmed = false
+	s.warning = ""
 	s.epoch++
+}
+
+// grabOne takes one device for REMOTE. A device another program already holds
+// delivers nothing to us or to the desktop, so it is skipped and reported: one
+// exclusive holder must not stop the other keyboards and mice from switching.
+func (s *linuxSource) grabOne(d *linuxDevice) error {
+	if e := grabDevice(d, true); e != nil {
+		if errors.Is(e, unix.EBUSY) {
+			d.foreign = true
+			return nil
+		}
+		return e
+	}
+	d.foreign = false
+	d.grabbed = true
+	return nil
+}
+func (s *linuxSource) updateWarning() {
+	var names []string
+	for _, d := range s.devices {
+		if d.foreign {
+			names = append(names, d.label())
+		}
+	}
+	s.warning = ""
+	if len(names) > 0 {
+		sort.Strings(names)
+		s.warning = "input held exclusively by another program, not forwarded: " + strings.Join(names, ", ")
+	}
+}
+func (d *linuxDevice) label() string {
+	if d.name != "" {
+		return d.name + " (" + filepath.Base(d.path) + ")"
+	}
+	return filepath.Base(d.path)
+}
+
+// Warning reports devices left out of the current REMOTE grab.
+func (s *linuxSource) Warning() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.warning
+}
+
+// grabPending takes devices that appeared during REMOTE once they are released,
+// instead of leaving REMOTE: hot-plug (e.g. a Bluetooth reconnect) keeps the session.
+func (s *linuxSource) grabPending() {
+	if !s.remote {
+		return
+	}
+	for _, d := range s.devices {
+		if !d.grabLater || !d.boundary || d.dropped || anyKey(d.keys) {
+			continue
+		}
+		d.grabLater = false
+		if e := s.grabOne(d); e != nil {
+			d.foreign = true // Report it rather than retrying an unusable device forever.
+		}
+	}
+	s.updateWarning()
+}
+func (s *linuxSource) remove(d *linuxDevice) input.Event {
+	unix.Close(d.fd) // Closing also ends our grab.
+	delete(s.devices, d.path)
+	s.updateWarning()
+	return input.Event{Device: d.path, Kind: input.Removed}
 }
 func (s *linuxSource) Local()                          { s.mu.Lock(); s.localLocked(); s.mu.Unlock(); s.route.local() }
 func (s *linuxSource) ReleaseLocal(*input.State) error { return nil }
@@ -139,6 +221,9 @@ func (s *linuxSource) TryLocal() (bool, error) {
 		return true, nil
 	}
 	for _, d := range s.devices {
+		if d.foreign {
+			continue
+		}
 		if !d.boundary || d.dropped {
 			s.mu.Unlock()
 			return false, nil
@@ -223,6 +308,9 @@ func (s *linuxSource) tryGrab() (bool, error) {
 		return false, nil
 	}
 	for _, d := range s.devices {
+		if d.foreign {
+			continue // Its keys belong to the exclusive holder; we never see them released.
+		}
 		if !d.boundary || d.dropped {
 			return false, nil
 		}
@@ -230,20 +318,20 @@ func (s *linuxSource) tryGrab() (bool, error) {
 		if e != nil {
 			return false, e
 		}
-		for _, b := range keys {
-			if b != 0 {
-				return false, nil
-			}
+		if anyKey(keys) {
+			return false, nil
 		}
 	}
 	for _, d := range s.devices {
-		if e := grabDevice(d, true); e != nil {
+		if e := s.grabOne(d); e != nil {
 			s.localLocked()
 			return false, e
 		}
-		d.grabbed = true
 	}
 	for _, d := range s.devices {
+		if !d.grabbed {
+			continue
+		}
 		if e := discardQueued(d); e != nil {
 			s.localLocked()
 			return false, e
@@ -251,16 +339,17 @@ func (s *linuxSource) tryGrab() (bool, error) {
 	}
 	snapshots := map[*linuxDevice][96]byte{}
 	for _, d := range s.devices {
+		if !d.grabbed {
+			continue
+		}
 		keys, e := queryKeys(d)
 		if e != nil {
 			s.localLocked()
 			return false, e
 		}
-		for _, b := range keys {
-			if b != 0 {
-				s.localLocked()
-				return false, errors.New("physical input changed during grab; returned to LOCAL")
-			}
+		if anyKey(keys) {
+			s.localLocked()
+			return false, errors.New("physical input changed during grab; returned to LOCAL")
 		}
 		snapshots[d] = keys
 	}
@@ -272,6 +361,7 @@ func (s *linuxSource) tryGrab() (bool, error) {
 	s.confirmed = false
 	s.requested = false
 	s.epoch++
+	s.updateWarning()
 	s.route.activate()
 	return true, nil
 }
@@ -287,10 +377,7 @@ func (s *linuxSource) scan() ([]input.Event, error) {
 	}
 	for path, d := range s.devices {
 		if !present[path] {
-			s.localLocked()
-			unix.Close(d.fd)
-			delete(s.devices, path)
-			events = append(events, input.Event{Device: path, Kind: input.Removed}, input.Event{Kind: input.Fault})
+			events = append(events, s.remove(d))
 		}
 	}
 	for _, path := range paths {
@@ -320,19 +407,16 @@ func (s *linuxSource) scan() ([]input.Event, error) {
 			unix.Close(fd)
 			continue
 		}
-		d := &linuxDevice{fd: fd, path: path, boundary: true}
+		d := &linuxDevice{fd: fd, path: path, name: strings.TrimRight(string(name[:]), "\x00"), boundary: true}
 		keys, e := readKeys(d)
 		if e != nil {
 			unix.Close(fd)
 			continue
 		}
-		if s.remote {
-			s.localLocked()
-			events = append(events, input.Event{Kind: input.Fault})
-		}
 		s.devices[path] = d
 		events = append(events, syncDevice(d, keys, true)...)
 		d.delivered = d.keys
+		d.grabLater = s.remote
 	}
 	return events, nil
 }
@@ -395,18 +479,12 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 			n, e := unix.Read(d.fd, raw[:])
 			if e != nil {
 				if e != unix.EAGAIN && e != unix.EINTR {
-					s.localLocked()
-					unix.Close(d.fd)
-					delete(s.devices, d.path)
-					events = append(events, input.Event{Device: d.path, Kind: input.Removed}, input.Event{Kind: input.Fault})
+					events = append(events, s.remove(d))
 				}
 				continue
 			}
 			if n == 0 {
-				s.localLocked()
-				unix.Close(d.fd)
-				delete(s.devices, d.path)
-				events = append(events, input.Event{Device: d.path, Kind: input.Removed}, input.Event{Kind: input.Fault})
+				events = append(events, s.remove(d))
 				continue
 			}
 			if n%24 != 0 {
@@ -417,11 +495,11 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 				kind, code, value := binary.LittleEndian.Uint16(raw[j+16:]), binary.LittleEndian.Uint16(raw[j+18:]), int32(binary.LittleEndian.Uint32(raw[j+20:]))
 				d.boundary = kind == 0 && code == 0
 				if kind == 0 && code == 3 {
+					// Rebuild from EVIOCGKEY at the next SYN_REPORT (design 7.1); losing
+					// buffered events is no reason to leave REMOTE or drop the session.
 					d.dropped = true
 					d.pending = nil
 					d.keys = d.delivered
-					s.localLocked()
-					events = append(events, input.Event{Kind: input.Fault})
 					continue
 				}
 				if kind == 0 && code == 0 && d.dropped {
@@ -493,6 +571,7 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 			sink(e)
 		}
 		s.mu.Lock()
+		s.grabPending()
 		acquired, grabError := s.tryGrab()
 		epoch := s.epoch
 		updates := s.boundaryEvents

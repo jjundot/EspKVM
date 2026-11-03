@@ -90,6 +90,7 @@ type windowsSource struct {
 	active, clipped atomic.Bool
 	globalHotkey    atomic.Bool
 	hotkeyWindow    atomic.Uintptr
+	keyboardHook    atomic.Uintptr
 	rawCtrlLeft     bool
 	rawCtrlRight    bool
 	rawAltLeft      bool
@@ -135,6 +136,7 @@ func (s *windowsSource) SetRecording(active bool) { s.route.setRecording(active)
 const (
 	espkvmHotkeyID     = 0x4553
 	espkvmHotkeyUpdate = 0x8001
+	espkvmHookRefresh  = 0x8002
 	wmHotkey           = 0x0312
 	modAlt             = 0x0001
 	modControl         = 0x0002
@@ -154,6 +156,20 @@ func (s *windowsSource) updateGlobalHotkey(window uintptr) {
 	} else {
 		debuglog.Printf("capture", "registered system Ctrl+Alt+W hotkey")
 	}
+}
+
+func (s *windowsSource) refreshKeyboardHook() {
+	if old := s.keyboardHook.Swap(0); old != 0 {
+		unhook.Call(old)
+	}
+	module, _, _ := kernel32.NewProc("GetModuleHandleW").Call(0)
+	hook, _, err := setHook.Call(13, keyboardProc, module, 0)
+	if hook == 0 {
+		debuglog.Printf("capture", "WH_KEYBOARD_LL hook refresh failed: %v", err)
+		return
+	}
+	s.keyboardHook.Store(hook)
+	debuglog.Printf("capture", "WH_KEYBOARD_LL hook moved to front of chain")
 }
 
 type keyInput struct {
@@ -197,6 +213,7 @@ func (s *windowsSource) Local() {
 	s.route.mu.Lock()
 	release := s.route.remote || s.route.transition || (s.route.hotkey != nil && s.route.hotkey.Waiting())
 	s.route.mu.Unlock()
+	debuglog.Printf("capture", "local route requested; previous remote/transition state=%t", release)
 	s.route.local()
 	if s.clipped.Swap(false) {
 		user32.NewProc("ClipCursor").Call(0)
@@ -233,6 +250,7 @@ func (s *windowsSource) Remote() (bool, error) {
 	}
 	s.clipped.Store(true)
 	s.route.activate()
+	debuglog.Printf("capture", "remote keyboard and mouse capture activated")
 	return true, nil
 }
 func (s *windowsSource) ReleaseLocal(*input.State) error {
@@ -268,11 +286,15 @@ func (s *windowsSource) fault() {
 func (s *windowsSource) observeRawKeyboard(key rawKeyboard) {
 	down := key.flags&1 == 0 // RI_KEY_BREAK
 	extended := key.flags&2 != 0
+	s.route.mu.Lock()
+	remote := s.route.remote || s.route.transition
+	s.route.mu.Unlock()
+	debuglog.PrintfAsync("capture", "raw keyboard VK=0x%x make=0x%x flags=0x%x down=%t remote=%t", key.vkey, key.makeCode, key.flags, down, remote)
 	tracked := false
 	switch key.vkey {
 	case 0x11, 0xa2, 0xa3, 0x12, 0xa4, 0xa5, virtualKeyW:
 		tracked = true
-		debuglog.Printf("capture", "raw keyboard VK=0x%x flags=0x%x down=%t", key.vkey, key.flags, down)
+		debuglog.PrintfAsync("capture", "raw hotkey key VK=0x%x flags=0x%x down=%t", key.vkey, key.flags, down)
 	}
 	s.rawKeyMu.Lock()
 	switch key.vkey {
@@ -304,7 +326,7 @@ func (s *windowsSource) observeRawKeyboard(key rawKeyboard) {
 	s.rawComboActive = combo
 	s.rawKeyMu.Unlock()
 	if tracked {
-		debuglog.Printf("capture", "raw hotkey state ctrl=%t alt=%t w=%t combo=%t", s.rawCtrlLeft || s.rawCtrlRight, s.rawAltLeft || s.rawAltRight, s.rawWDown, combo)
+		debuglog.PrintfAsync("capture", "raw hotkey state ctrl=%t alt=%t w=%t combo=%t", s.rawCtrlLeft || s.rawCtrlRight, s.rawAltLeft || s.rawAltRight, s.rawWDown, combo)
 	}
 	if trigger && s.globalHotkey.Load() && !s.route.recordingActive() && !s.route.recentHotkeyTrigger() && s.sink != nil {
 		s.route.markHotkeyTrigger()
@@ -344,18 +366,8 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 		}
 		if ok {
 			event := input.Event{Device: "windows-hooks", Kind: kind, Code: usage, Down: raw.flags&0x80 == 0, Captured: time.Now(), Synthetic: raw.flags&0x10 != 0}
-			if kind == input.Key && (usage == 0xe0 || usage == 0xe2 || usage == 0x1a) {
-				debuglog.Printf("capture", "low-level keyboard VK=0x%x scan=0x%x flags=0x%x usage=0x%x down=%t", raw.vk, raw.scan, raw.flags, usage, event.Down)
-			}
 			swallow := s.route.routeEvent(&event)
-			if kind == input.Key && usage == 0x1a && event.Down {
-				s.route.mu.Lock()
-				waiting := s.route.hotkey != nil && s.route.hotkey.Waiting()
-				s.route.mu.Unlock()
-				if waiting {
-					debuglog.Printf("capture", "low-level hook recognized complete shortcut")
-				}
-			}
+			debuglog.PrintfAsync("capture", "keyboard hook VK=0x%x scan=0x%x flags=0x%x HID=0x%x down=%t swallowed=%t", raw.vk, raw.scan, raw.flags, usage, event.Down, swallow)
 			token := input.Token(kind, usage)
 			s.mu.Lock()
 			if !swallow {
@@ -380,6 +392,7 @@ func keyboardCallback(code int32, wparam, lparam uintptr) uintptr {
 			s.route.mu.Lock()
 			swallow := s.route.remote || s.route.transition
 			s.route.mu.Unlock()
+			debuglog.PrintfAsync("capture", "unmapped keyboard hook VK=0x%x scan=0x%x flags=0x%x swallowed=%t", raw.vk, raw.scan, raw.flags, swallow)
 			if swallow {
 				return 1
 			}
@@ -518,6 +531,10 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 }
 func windowCallback(window uintptr, kind uint32, wparam, lparam uintptr) uintptr {
 	s := current.Load()
+	if s != nil && kind == espkvmHookRefresh {
+		s.refreshKeyboardHook()
+		return 0
+	}
 	if s != nil && kind == espkvmHotkeyUpdate {
 		s.updateGlobalHotkey(window)
 		return 0
@@ -661,7 +678,13 @@ func (s *windowsSource) Run(ctx context.Context, sink func(input.Event) bool) er
 	if keyboard == 0 {
 		return e
 	}
-	defer unhook.Call(keyboard)
+	s.keyboardHook.Store(keyboard)
+	debuglog.Printf("capture", "WH_KEYBOARD_LL hook installed thread=%d desktop=%q", thread, desktopName())
+	defer func() {
+		if hook := s.keyboardHook.Swap(0); hook != 0 {
+			unhook.Call(hook)
+		}
+	}()
 	mouse, _, e := setHook.Call(14, mouseProc, module, 0)
 	if mouse == 0 {
 		return e
@@ -679,6 +702,7 @@ func (s *windowsSource) Run(ctx context.Context, sink func(input.Event) bool) er
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		previous := desktopName()
+		var foreground, foregroundCandidate uintptr
 		for {
 			select {
 			case <-done:
@@ -688,6 +712,22 @@ func (s *windowsSource) Run(ctx context.Context, sink func(input.Event) bool) er
 				postThread.Call(thread, 0x12, 0, 0)
 				return
 			case <-ticker.C:
+				activeWindow, _, _ := user32.NewProc("GetForegroundWindow").Call()
+				if activeWindow != 0 {
+					rootWindow, _, _ := user32.NewProc("GetAncestor").Call(activeWindow, 2) // GA_ROOT
+					if rootWindow != 0 && rootWindow != foreground {
+						if foregroundCandidate == rootWindow {
+							foreground = rootWindow
+							foregroundCandidate = 0
+							debuglog.Printf("capture", "foreground window changed hwnd=0x%x; refreshing keyboard hook chain", foreground)
+							user32.NewProc("PostMessageW").Call(window, espkvmHookRefresh, 0, 0)
+						} else {
+							foregroundCandidate = rootWindow
+						}
+					} else if rootWindow == foreground {
+						foregroundCandidate = 0
+					}
+				}
 				next := desktopName()
 				if next == "" || next != previous {
 					s.fault()

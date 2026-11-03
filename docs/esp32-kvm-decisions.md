@@ -280,6 +280,9 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 - Windows 钩子必须同步决定吞放,不能先交给异步 dispatcher 再决定。钩子线程维护最小路由/热键状态,按事件序号与 dispatcher 衔接,回调只非阻塞入队。键盘和按钮以钩子为唯一来源,Raw Input 只取相对位移及滚轮,避免双计数;验证低级钩子吞键后 Raw Input 的实际可用性。回注带自定义标记并排除,避免递归;退出、会话锁定或切换桌面时撤销 ClipCursor 并回 LOCAL。
 - Linux 按 SYN_REPORT 处理批次,EV_KEY value=2 不重复改变状态;监听热插拔、排除本程序 uinput 设备、处理 SYN_DROPPED 并通过 EVIOCG* 重建状态。回注设备声明所需能力及 SYN_REPORT。多个物理设备同按一个键时使用每设备状态与引用计数,拔出设备释放其贡献。
+- Linux REMOTE 期间的热插拔与丢事件不离开 REMOTE、不断开会话:新设备在按键全释放的批次边界补抓(插入时有键按住则等其释放);拔出设备只释放它的按键贡献;SYN_DROPPED 丢弃到下一个 SYN_REPORT 后用 EVIOCGKEY 重建,重建出的按下键进入抑制集合。
+- Linux 设备已被其他程序独占(EVIOCGRAB 返回 EBUSY,如 keyd、input-remapper、虚拟机直通)时,我们和桌面都收不到它的事件:该设备被跳过并在切换状态中警告,其余设备照常切换;它的按键状态不阻塞进入或退出 REMOTE。其他抓取错误仍整体回滚。这与 Windows 上 mstsc 等程序的低级钩子先于本程序吞键属于同类问题,Linux 在 evdev 层捕获,不受 X11/Wayland 应用级键盘抓取(远程桌面、虚拟机窗口)影响,唯一的同类来源就是 evdev 独占。
+- udev 规则覆盖 ID_INPUT_KEYBOARD、ID_INPUT_MOUSE 和 ID_INPUT_KEY,避免键盘的多媒体/NKRO 副接口不可读而在 REMOTE 时留在本机。
 - Linux LOCAL 不抓取、不回注。正常进入远程须物理全释放，在批次边界抓取并重读状态；任一失败撤销所有抓取。故障立即解除抓取。LOCAL 已到桌面的输入不能用另一个 uinput 设备撤销；LOCAL 可能看到整个热键组合。
 - 正常回 LOCAL 先确认远程释放，优先等物理键/按钮全释放的批次边界再解除抓取，dispatcher 仍处理输入。故障、取消或退出立即解除，不为等待物理释放延误本机恢复。恢复时可能出现物理保持键的后续原生事件，抑制集合不承诺过滤 Linux LOCAL 的桌面输入。
 

@@ -4,7 +4,11 @@ package capture
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/jjundot/EspKVM/internal/input"
+	"golang.org/x/sys/unix"
 )
 
 func mockDevices(t *testing.T) (*linuxSource, *int) {
@@ -133,5 +137,66 @@ func TestNormalLocalWaitsButFaultLocalDoesNot(t *testing.T) {
 	s.Local()
 	if s.remote || *released != 2 {
 		t.Fatal("fault LOCAL waited for physical release")
+	}
+}
+func TestExclusiveHolderIsSkippedNotFatal(t *testing.T) {
+	s, _ := mockDevices(t)
+	s.devices["b"].name = "keyd virtual keyboard"
+	grabDevice = func(d *linuxDevice, grab bool) error {
+		if grab && d.path == "b" {
+			return unix.EBUSY
+		}
+		return nil
+	}
+	s.Remote()
+	if ready, e := s.tryGrab(); !ready || e != nil {
+		t.Fatal("exclusive holder aborted the switch", ready, e)
+	}
+	if !s.devices["a"].grabbed || s.devices["b"].grabbed || !s.devices["b"].foreign {
+		t.Fatal("wrong grab set")
+	}
+	if !strings.Contains(s.Warning(), "keyd virtual keyboard") {
+		t.Fatal("exclusive device not reported", s.Warning())
+	}
+	// Once known, keys typed into the exclusive holder block neither direction.
+	queryKeys = func(d *linuxDevice) ([96]byte, error) {
+		keys := [96]byte{}
+		if d.path == "b" {
+			keys[1] = 1
+		}
+		return keys, nil
+	}
+	s.devices["b"].keys[1] = 1
+	if ready, e := s.TryLocal(); !ready || e != nil || s.Warning() != "" {
+		t.Fatal("foreign keys blocked LOCAL", ready, e)
+	}
+	s.Remote()
+	if ready, e := s.tryGrab(); !ready || e != nil || !s.devices["b"].foreign {
+		t.Fatal("foreign keys blocked REMOTE", ready, e)
+	}
+}
+func TestHotplugAndRemovalKeepRemote(t *testing.T) {
+	s, _ := mockDevices(t)
+	for _, d := range s.devices {
+		d.fd = -1
+	}
+	s.Remote()
+	if ready, e := s.tryGrab(); !ready || e != nil {
+		t.Fatal(ready, e)
+	}
+	held := &linuxDevice{fd: -1, path: "c", boundary: true, grabLater: true}
+	held.keys[1] = 1
+	s.devices["c"] = held
+	s.grabPending()
+	if !s.remote || held.grabbed || !held.grabLater {
+		t.Fatal("device with held keys grabbed mid-press, or REMOTE lost")
+	}
+	held.keys = [96]byte{}
+	s.grabPending()
+	if !s.remote || !held.grabbed || held.grabLater {
+		t.Fatal("released hot-plugged device not grabbed")
+	}
+	if e := s.remove(s.devices["a"]); e.Kind != input.Removed || !s.remote || s.devices["a"] != nil {
+		t.Fatal("removal left REMOTE", e)
 	}
 }

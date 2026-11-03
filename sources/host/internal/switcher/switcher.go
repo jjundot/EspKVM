@@ -237,6 +237,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			} else {
 				d.capture.Local()
 			}
+			debuglog.Printf("switcher", "local target activated")
 			view.Target = Local
 			view.Phase = "idle"
 			publish()
@@ -258,6 +259,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			return
 		}
 		if !ok {
+			debuglog.Printf("switcher", "waiting for physical key/button release before activating target=%s", desired)
 			view.Phase = "waiting-release"
 			publish()
 			return
@@ -266,6 +268,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		activatedAt = time.Now()
 		view.Phase = "idle"
 		view.Error = ""
+		// E.g. Linux devices held exclusively by another program stay with that program.
+		if source, ok := d.capture.(interface{ Warning() string }); ok {
+			view.Warning = source.Warning()
+		}
+		debuglog.Printf("switcher", "device target activated id=%s", desired)
 		publish()
 	}
 	// cancel returns a switch in progress to LOCAL without closing any session.
@@ -544,6 +551,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				msg = &pb.Msg{Body: &pb.Msg_Consumer{Consumer: &pb.Consumer{Usage: usage}}}
 			}
 			if msg != nil {
+				if event.Kind == input.Key {
+					debuglog.Printf("switcher", "sending keyboard usage=%d down=%t to target=%s generation=%d", event.Code, event.Down, view.Target, view.Generation)
+				}
 				if e := l.endpoint.Send(msg, view.Generation, true); e != nil {
 					fallback(e.Error())
 				}
