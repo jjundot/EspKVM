@@ -23,6 +23,7 @@ func Run(args []string) error {
 	addr := flags.String("address", "", "explicit device IP:port")
 	pskFile := flags.String("psk-file", "", "file containing hex PSK (never pass secrets on command line)")
 	cfg := flags.String("config", "", "full device config JSON for serial-set")
+	duration := flags.Duration("duration", 0, "serial-log duration; 0 runs until interrupted")
 	id := flags.String("id", "", "stable device id")
 	storePath := flags.String("store", "", "client credential path")
 	confirm := flags.Bool("confirm-reset", false, "explicitly authorize factory reset")
@@ -30,7 +31,7 @@ func Run(args []string) error {
 		return e
 	}
 	if flags.NArg() != 1 {
-		return errors.New("usage: espkvm ctl [flags] ports|info|serial-set|reboot|factory-reset|check|verify|pending-list|pending-discard|new-psk")
+		return errors.New("usage: espkvm ctl [flags] ports|info|serial-log|serial-set|reboot|factory-reset|check|verify|pending-list|pending-discard|new-psk")
 	}
 	if *storePath == "" {
 		p, e := config.DefaultPath()
@@ -48,6 +49,17 @@ func Run(args []string) error {
 			return e
 		}
 		return json.NewEncoder(os.Stdout).Encode(p)
+	case "serial-log":
+		c, e := serialcfg.Open(*port)
+		if e != nil {
+			return e
+		}
+		defer c.Close()
+		var until time.Time
+		if *duration > 0 {
+			until = time.Now().Add(*duration)
+		}
+		return c.Logs(until, func(text string) { fmt.Println(text) })
 	case "new-psk":
 		p, e := config.NewPSK()
 		if e == nil {

@@ -71,9 +71,9 @@ build/host/bin/espkvm_x86_64_linux.exe ctl -id desk verify
 build/host/bin/espkvm_x86_64_linux.exe ctl -address 192.168.1.10:24800 -psk-file secret.hex check
 ```
 
-参数放在子命令前。完整配置 JSON 遵循 `sources/protocol/ek.proto` 的 protobuf JSON 映射；首次配置须同时提供 password（开放网络显式空字符串）及 base64 的 16B 随机 PSK；已配对时缺省两字段表示保留，显式空 PSK 拒绝。配置请求前会原子保存 pending 凭据；应答丢失保留 pending，不自动重发。`verify` 用新凭据认证并比对脱敏配置；TCP 服务已实现，仍需真实设备互通验收。
+设备日志以帧格式输出在配网串口上，用 `espkvm ctl -serial COM5 serial-log` 查看（`-duration 30s` 限定时长），普通串口终端只能看到乱码。参数放在子命令前。完整配置 JSON 遵循 `sources/protocol/ek.proto` 的 protobuf JSON 映射；首次配置须同时提供 password（开放网络显式空字符串）及 base64 的 16B 随机 PSK；已配对时缺省两字段表示保留，显式空 PSK 拒绝。配置请求前会原子保存 pending 凭据；应答丢失保留 pending，不自动重发。`verify` 用新凭据认证并比对脱敏配置；TCP 服务已实现，仍需真实设备互通验收。
 
-默认凭据文件：客户端可执行文件旁的 `config.json`。Windows 文件 ACL 限制为当前用户和 SYSTEM；Linux 文件权限为 0600。首次升级时会从旧用户配置目录复制现有配置到可执行文件旁，并保留旧文件作为备份。Web UI 首次登录密码为 `admin`，可在登录后修改；密码以 PBKDF2-SHA256 摘要和随机盐保存。Web UI 显示客户端版本，格式为 `shortsha_YYYYMMDDTHHMMSSZ`；设备固件使用相同格式，但由设备固件独立编译生成。日志不输出凭据。
+默认凭据文件：客户端可执行文件旁的 `config.json`。Windows 文件 ACL 限制为当前用户和 SYSTEM；Linux 文件权限为 0600。首次升级时会从旧用户配置目录复制现有配置到可执行文件旁，并保留旧文件作为备份。Web UI 首次登录密码为 `admin`，请登录后立即修改；密码以 `md5("espkvm_" + 密码)` 的十六进制保存在 `web_password_md5` 字段中，修改后所有旧会话失效，只能用新密码访问。Web UI 显示客户端版本，格式为 `shortsha_YYYYMMDDTHHMMSSZ`；设备固件使用相同格式，但由设备固件独立编译生成。日志不输出凭据。
 
 ## 固件（未配对时仅 UART）
 

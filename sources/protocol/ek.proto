@@ -54,6 +54,7 @@ message Status {
   string fw_version  = 6;
   uint32 keep_awake_state = 7; // 0=off,1=no heartbeat,2=HOST idle,3=C expired,4=waiting,5=keeping awake
   uint32 keep_awake_moves = 8;
+  bool   usb_suspended = 9; // USB host asleep or re-enumerating after wake; releases are already safe
 }
 message KeepAwake {
   bool enabled = 1;
@@ -90,6 +91,9 @@ message SerialInfo {
   Config config = 4; // psk/password 不存在
   string fw_version = 5;
 }
+message SerialLog {
+  string text = 1; // One device log line; device-to-client only, never answers a request
+}
 message SerialAck {
   uint32 code = 1; // 0=成功,1=不支持版本,2=非法请求,3=存储失败,4=忙
 }
@@ -104,6 +108,7 @@ message SerialPacket {
     Empty reboot = 20;
     Empty factory_reset = 21;
     SerialAck ack = 22;
+    SerialLog log = 23;
   }
 }
 

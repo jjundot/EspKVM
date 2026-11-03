@@ -106,7 +106,7 @@ static bool write_frame(connection *c, const uint8_t *data, size_t n, int64_t de
     }
     return true;
 }
-static bool send_msg(connection *c, bool encrypted, int64_t deadline) {
+static bool send_until(connection *c, bool encrypted, int64_t deadline) {
     pb_ostream_t out = pb_ostream_from_buffer(c->plain, 512);
     if (!pb_encode(&out, ek_Msg_fields, &c->msg))
         return false;
@@ -121,7 +121,20 @@ static bool send_msg(connection *c, bool encrypted, int64_t deadline) {
         memcpy(c->wire + 12, c->plain, n);
         n += 12;
     }
-    return write_frame(c, c->wire, n, minimum(deadline, now_ms() + 100));
+    return write_frame(c, c->wire, n, deadline);
+}
+static bool send_msg(connection *c, bool encrypted, int64_t deadline) {
+    return send_until(c, encrypted, minimum(deadline, now_ms() + 100));
+}
+// send() only queues into lwIP. Before a restart, half-close so the result is
+// followed by FIN, then wait until the peer closes after reading it, or the deadline.
+static void flush_before_restart(connection *c, int64_t deadline) {
+    shutdown(c->fd, SHUT_WR);
+    while (wait_fd(c->fd, false, deadline) > 0) {
+        int got = recv(c->fd, c->raw, sizeof(c->raw), 0);
+        if (got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+            return;
+    }
 }
 // 0 means no first byte before the next scheduled heartbeat; -1 closes the stream.
 static int receive(connection *c, bool encrypted, int64_t idle) {
@@ -228,6 +241,7 @@ static bool status(connection *c) {
     snprintf(s->fw_version, sizeof(s->fw_version), "%s", EK_FW_VERSION_STRING);
     s->uptime_s = now_ms() / 1000;
     s->usb_mounted = hid_mounted();
+    s->usb_suspended = hid_sleeping();
     s->kb_leds = hid_leds();
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
@@ -285,9 +299,13 @@ static bool dispatch(connection *c) {
         c->msg.body.cfg_result = result;
         if (!result.code)
             hid_release();
-        bool sent = send_msg(c, true, now_ms() + 200);
-        if (!result.code)
+        int64_t deadline = now_ms() + 200;
+        bool sent = send_until(c, true, deadline);
+        if (!result.code) {
+            if (sent)
+                flush_before_restart(c, deadline);
             esp_restart();
+        }
         return sent;
     }
     case ek_Msg_reboot_tag:

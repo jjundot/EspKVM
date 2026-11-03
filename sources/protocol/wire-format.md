@@ -12,6 +12,8 @@ candidates after CRC failure or a fixed one-second candidate deadline.
 
 Consumer usages currently supported: 0 (release), B5, B6, B7, CD, E2, E9, EA.
 `testdata/frames.txt` contains named full serial wire frames, shared by C and Go.
+Device logs travel on the same UART as `SerialPacket{proto_ver=2, log{text}}`
+frames with their own nonzero sequence; clients skip them by type, never as replies.
 
 Challenge and SerialPacket require version 2; no downgrade. Nonce, MAC, HMAC
 and owner lengths are checked after decoding. Nanopb uses length-bearing arrays
@@ -45,11 +47,14 @@ Only a matching, unexpired probe produces an RTT sample. RTT is not input latenc
 or USB completion latency.
 
 ReleaseAll.id is nonzero and strictly increases per connection. Released.id is
-sent only after keyboard, mouse and Consumer zero reports complete on USB.
+sent only after the zero reports of every interface the host uses complete on USB
+(unused or stalled interfaces are skipped). While the USB host is suspended, or
+within 20 s of a wake-time bus reset, it is acknowledged at once: suspend already
+cleared the state and pending-release runs before any input after resume.
 Requests may share a stronger later barrier, but each id is acknowledged. Both
-sides bound waiters to 128. Host calls time out after 500 ms and close the session;
+sides bound waiters to 128. Host calls time out after 500 ms (20 s while Status.usb_suspended) and close the session;
 close completes every waiter. Unknown/duplicate acknowledgements are errors.
-Unmounted USB keeps pending-release and cannot acknowledge success.
+Unmounted USB outside that grace keeps pending-release and cannot acknowledge success.
 
 `testdata/v2.txt` contains protobuf, proofs, key and full GCM frames. Regenerate it
 with `node tools/generate_vectors.cjs`, an independent Node crypto/manual-wire

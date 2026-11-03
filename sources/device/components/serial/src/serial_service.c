@@ -104,18 +104,8 @@ static void task(void *ctx) {
         ek_zero(rx,sizeof(rx));
     }
 }
+// The UART driver is installed by serial_log_start, before any application log.
 esp_err_t serial_service_start(void) {
-    uart_config_t config = {.baud_rate = 115200,
-                            .data_bits = UART_DATA_8_BITS,
-                            .parity = UART_PARITY_DISABLE,
-                            .stop_bits = UART_STOP_BITS_1,
-                            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-                            .source_clk = UART_SCLK_DEFAULT};
-    esp_err_t e = uart_param_config(UART_NUM_0, &config);
-    if (e != ESP_OK)
-        return e;
-    if ((e = uart_driver_install(UART_NUM_0, 1024, 1024, 0, NULL, 0)) != ESP_OK)
-        return e;
     if (xTaskCreate(task, "serial", 4096, NULL, 5, NULL) != pdPASS)
         return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "UART provisioning ready at 115200 baud");

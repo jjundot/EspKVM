@@ -33,7 +33,7 @@
 | 序列化 | **Protobuf**(固件 nanopb,客户端 protobuf-go),单一事实来源 `ek.proto` |
 | 外层帧 | 串口/TCP 共用 12 字节 ek_hdr_t:magic、len、flags、rsvd、seq;均为小端 |
 | 加密 | **AES-128-GCM**,每次连接用 PSK 派生新会话密钥 |
-| 切换热键 | **Ctrl + Alt + W 同时按下**,Web UI 可改 |
+| 切换热键 | **Ctrl + Alt + W 同时按下**,Web UI 可改;Windows 另有 Ctrl+鼠标侧键正/反向轮换(第 8 节) |
 | 多设备 | 客户端**同时连接多台 ESP32**,但同一时刻只控制一台;同一热键按顺序**循环切换**:本机 → DEV0 → DEV1 → … → 本机 |
 | 多设备协议/固件 | 使用同一套单会话固件,不增加跨设备协议。每台设备独立 IP、独立 PSK、独立会话;切换逻辑在客户端 |
 | 鼠标 | 仅**相对鼠标**,走 TCP;客户端累加 delta,不排队 |
@@ -44,7 +44,7 @@
 
 - 板子使用 ESP32-S3 开发板(如 ESP32-S3-DevKitC-1)。
 - **原生 USB 口** → 受控电脑(同时供电、提供 HID)。
-- **UART 口** → 非受控电脑(烧录、首次配网;应用日志不混入配网协议)。
+- **UART 口** → 非受控电脑(烧录、首次配网;应用日志以 SerialPacket.log 帧输出,不以文本混入配网协议)。
 - USB 复合 HID 接口:
   - 键盘:独立 Boot Keyboard 接口,Report Protocol 使用 NKRO 位图;Boot Protocol 使用标准 8 字节报告。BIOS 兼容性按目标机器验收
   - 相对鼠标:5 键 + 纵向/横向滚轮
@@ -75,10 +75,11 @@ ek_hdr_t | Protobuf(SerialPacket)[len] | CRC32_LE[4]
 | cfg_set | cfg_result | 复用完整 Config 校验及原子保存;成功后按 6.2 节应答并重启 |
 | reboot | ack | 先应答后重启 |
 | factory_reset | ack | 清除配置,持久化成功后应答并重启;失败返回非零 code |
+| — | log | 设备主动输出的一行应用日志(D→C),不应答任何请求 |
 
-合法信封中的不支持消息/版本返回 ack 非零 code,不执行配置。串口事务和 TCP 配置事务互斥;清除配置或重启均先触发安全释放。factory_reset 仅由用户显式恢复出厂操作触发,不自动用于恢复失败。首次配对 psk 必须是 16 字节,不能用空值创建配对配置。
+合法信封中的不支持消息/版本返回 ack 非零 code,不执行配置。log 帧使用设备自有的非零递增 seq,与 request_id 无关;客户端按消息类型识别并跳过,不作为应答。串口事务和 TCP 配置事务互斥;清除配置或重启均先触发安全释放。factory_reset 仅由用户显式恢复出厂操作触发,不自动用于恢复失败。首次配对 psk 必须是 16 字节,不能用空值创建配对配置。
 
-该 UART 禁止输出普通文本日志及输入回显;应用日志使用其他调试通道或独立日志构建。ROM/Bootloader 在重启时可能产生文本,视为噪声并按第 5.2.2 节重同步,不能把 Magic 扫描当作日志复用机制。客户端超时不得盲目重发 cfg_set/factory_reset;改用状态读取及 pending 恢复流程。手动救援提供 Go CLI,与 Web UI 共用 serialcfg 库。
+该 UART 禁止输出普通文本日志及输入回显。固件在 app_main 最先安装 UART 驱动并通过 `esp_log_set_vprintf` 把每行 ESP_LOG 封装为完整的 `ek_hdr_t | SerialPacket{log} | CRC32` 帧(text 最多 255 字节,去掉行尾换行),每帧一次 `uart_write_bytes` 写出,驱动保证它与配网应答帧不交错。`espkvm ctl -serial COMx serial-log` 解析并打印这些日志;配网请求期间收到的日志写入客户端 debug 日志。ROM/Bootloader 及 app_main 之前的 IDF 启动文本仍可能出现,视为噪声并按第 5.2.2 节重同步。客户端超时不得盲目重发 cfg_set/factory_reset;改用状态读取及 pending 恢复流程。手动救援提供 Go CLI,与 Web UI 共用 serialcfg 库。
 
 ### 4.2 客户端串口配网流程
 
@@ -215,7 +216,7 @@ RTT 从 writer 开始发送探测到收到并认证匹配响应，用单调时�
 
 ### 5.6 Protobuf 使用要点
 
-ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回绕。设备可把连续请求合并到更强的同一 USB 屏障，但必须分别确认所有 id；控制等待者上限 128。只有三个接口的全释放报告均完成后才能发送 Released。客户端从调用起最多等待 500 ms，超时关闭会话并唤醒全部等待者；未知或重复 Released 视为非法消息。500 ms 是待实测确认的初始安全边界。未挂载 USB 时不得确认成功，重挂后先完成 pending-release。
+ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回绕。设备可把连续请求合并到更强的同一 USB 屏障，但必须分别确认所有 id；控制等待者上限 128。只有主机在用的接口的全释放报告均完成后才能发送 Released(见 6.1 节)。唯一例外是 USB 主机睡眠:挂起本身已清空逻辑状态并置 pending-release,恢复或重新枚举后先发中性报告再输入,因此挂起期间(及唤醒时总线复位后 20 s 内)ReleaseAll 立即确认,使切换在目标机睡眠时也能完成,随后用户的键鼠输入触发远程唤醒。客户端从调用起最多等待 500 ms;设备状态 `usb_suspended=true` 时放宽到 20 s。超时关闭会话并唤醒全部等待者;未知或重复 Released 视为非法消息。500 ms 是待实测确认的初始安全边界。USB 真正卸载(无睡眠宽限)时不得确认成功,重挂后先完成 pending-release。
 
 - 固件用 **nanopb**,禁用 callback 字段与动态分配;`Msg` 与收发缓冲区按任务/会话独占静态分配,不放任务栈;禁止跨任务共享可变解码对象。
 - proto3 零值不编码:键盘全释放编码为空 `KbState`,解码得到全 0,语义正确。
@@ -232,10 +233,11 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 | 任务 | 职责 |
 |---|---|
 | `wifi_task` | STA 连接、静态 IP、断线重连 |
-| `serial_task` | 共享帧头/CRC/SerialPacket 解析、配置/重启/恢复出厂,复用配置服务 |
-| `tcp_task` | Accept、握手、GCM、nanopb 解码、入队 |
-| `hid_task` | 维护键盘/鼠标状态,合并鼠标 delta,按 USB 轮询节拍发送 HID 报告 |
-| NVS | WiFi 凭据、IP、端口、名称、PSK、USB VID/PID、six_kro |
+| `serial` | 共享帧头/CRC/SerialPacket 解析、配置/重启/恢复出厂,复用配置服务;日志钩子输出 log 帧 |
+| `accept` / `session` | Accept、握手、GCM、nanopb 解码、入队;每连接一个 session 任务 |
+| `watchdog` | 25 ms 轮询认证有效帧时间、WiFi 状态和 HID 故障 |
+| `hid` | 维护键盘/鼠标状态,合并鼠标 delta,按 1 ms 节拍发送 HID 报告;防休眠模拟移动 |
+| NVS | WiFi 凭据、IP、端口、名称、PSK、USB VID/PID、six_kro、keep_awake |
 
 行为要点:
 
@@ -249,7 +251,10 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 - 状态转换使用容量为 128 的有界 FIFO,不能只保存最后状态。按下与抬起即使在一个 USB 轮询周期内到达也必须分别提交。只在同一按钮状态的连续段中合并位移,禁止跨按钮边界合并。队列项保存值副本,不得引用可被下次解码覆盖的 Msg。
 - HID endpoint ready 时提交队头,提交成功后等待完成回调再推进;失败不扣除位移。1 ms 为轮询目标,不是网络或端到端延迟保证。跨接口按 FIFO 顺序完成提交,明确区分已入队、已提交及 USB 传输完成。
 - 释放屏障通过独立高优先级控制状态触发,不得排在满队列尾部:废弃旧输入和位移、清零逻辑状态,等待在途报告完成后优先提交各接口全释放。屏障完成前不提交新输入;断线时同时使旧会话队列失效。
-- 队满或最老输入等待超过 100 ms 时关闭会话并触发屏障。USB 不可用时无法保证实际送达释放,记录 pending-release;重新枚举后首先发送全释放。释放前不接受输入。
+- 队满或最老输入等待超过 100 ms 时关闭会话并触发屏障。USB 不可用时无法保证实际送达释放,记录 pending-release;重新枚举或恢复后首先发送全释放。同一代的输入可排在这一传输屏障之后,但屏障完成前不提交。
+- 接口使用状态:主机读取报告描述符或发送 SET_IDLE/SET_PROTOCOL/GET_REPORT/SET_REPORT,或接口完成过传输,才算"在用"。主机未使用的接口(例如 BIOS 只驱动 Boot 键盘)不参与释放屏障,发往它的输入直接丢弃。
+- 提交后 100 ms 未完成视为该端点停止轮询:放弃该传输、标记 stalled 并触发故障屏障,屏障跳过 stalled 接口,不能让一个接口卡死全部接口。被放弃的报告若之后迟到完成,主机可能持有过期报告,立即补发该接口的当前逻辑状态。
+- SET_IDLE 重复报告单独标记,完成回调只结束本次传输,不推进 FIFO,也不重复相对位移。
 - 独立看门狗检查认证有效帧时间,到 3 s 时触发屏障并关闭会话。网络任务不能因队列或 USB 等待阻止看门狗运行。
 
 ### 6.2 配置事务
@@ -257,7 +262,7 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 - CFG_SET 完整替换非敏感字段。optional password/psk 缺省时在同一事务锁内保留活动值；显式空 password 是开放网络，显式空 PSK 拒绝。读取时两个字段均不出现。首次须同时提供凭据。
 - 校验名称 UTF-8 最多 31 字节、SSID 1..32 字节、密码为空或 8..63 字节口令或 64 位十六进制值、PSK 存在时 16 字节、端口 1..65535、VID/PID 1..65535、连续掩码及主机/网关地址合法性。所有字段先校验,失败不改变活动或持久配置。USB VID/PID 只能采用有合法使用依据的值。
 - 同时只允许一个配置事务,串口与 TCP 共用互斥锁。候选配置以带版本和校验的单个 NVS blob 保存,采用双槽及递增版本号;完整写入并 commit 后才作为有效版本,启动选择最新完整有效槽。断电不能产生字段混合。
-- 提交成功后先触发输入释放,发送 CFG_RESULT(code=0),等待发送完成或最多 200 ms 后重启;失败返回错误且不重启。客户端每会话最多一个 CFG_SET 在途,不自动重发,不允许切换后仍给旧连接写配置。
+- 提交成功后先触发输入释放,发送 CFG_RESULT(code=0),等待发送完成或最多 200 ms 后重启;失败返回错误且不重启。TCP 上 `send()` 只代表进入 lwIP 缓冲,因此写出后 `shutdown(SHUT_WR)`,等待对端读完结果后关闭连接或 200 ms 期限到达再重启;客户端在连接关闭时优先采用已到达的 CFG_RESULT。客户端每会话最多一个 CFG_SET 在途,不自动重发,不允许切换后仍给旧连接写配置。
 - 客户端发送前原子落盘旧配置与 pending 新配置;应答丢失或连接断开不等于失败。尝试新 IP/PSK 并认证,读取非敏感配置核对后标为 ready;失败时保留两份候选供恢复,不无界循环改配置。CFG_RESULT 成功只代表持久化成功,不代表新 WiFi 一定可达;错误网络参数通过串口恢复。
 
 ## 7. 客户端设计(Go)
@@ -290,7 +295,18 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 ## 8. 热键与统一切换状态机
 
-默认热键为左 Ctrl、左 Alt 和 W 的 HID Usage 集合 `{0xE0, 0xE2, 0x1A}`,支持 Web UI 录入至少两个键的其他组合。物理按键状态与已转发状态分开维护;不得因切换清空物理状态。
+默认热键为左 Ctrl、左 Alt 和 W 的 HID Usage 集合 `{0xE0, 0xE2, 0x1A}`,支持 Web UI 录入 2..8 个不同键的其他组合。物理按键状态与已转发状态分开维护;不得因切换清空物理状态。
+
+热键触发来源(均进入同一 dispatcher 和第 8.3 节切换流程):
+
+| 来源 | 平台 | 条件 | 方向 |
+|---|---|---|---|
+| 物理状态组合 | Windows LL 钩子 / Linux evdev | 当前配置的 Usage 集合,按 8.1 节语义 | 正向 |
+| Raw Input 识别 | Windows,仅默认热键 | 任一侧 Ctrl + 任一侧 Alt + W 组合形成的边沿 | 正向 |
+| RegisterHotKey | Windows,仅默认热键 | 系统 `MOD_CONTROL|MOD_ALT|MOD_NOREPEAT` + W,钩子收不到事件(如焦点在提权窗口)时兜底 | 正向 |
+| 鼠标组合 | Windows | 按住任一侧 Ctrl 时按下 XButton1 / XButton2;侧键本身被吞掉,不转发 | XButton1 正向,XButton2 反向 |
+
+后三个来源 200 ms 内只触发一次,与钩子路径共同去重;录入热键期间都不触发。热键改为非默认组合时注销 RegisterHotKey 并停用 Raw Input 识别。部分鼠标驱动以 `VK_BROWSER_BACK/FORWARD` 报告侧键,钩子把这两个虚拟键视为 XButton1/XButton2。
 
 ### 8.1 热键语义
 
@@ -300,7 +316,7 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 ### 8.2 目标与轮换
 
-目标为 `LOCAL, DEV0, DEV1, ...`,按设备列表顺序循环,仅包含已启用、已认证且 USB 已挂载的设备。重排按稳定设备 id 保持目标。Web UI 可直接选择目标,与热键共用以下流程;不提供反向或直接跳转热键。
+目标为 `LOCAL, DEV0, DEV1, ...`,按设备列表顺序循环,仅包含已启用、已认证且 USB 已挂载的设备;USB 主机睡眠中(状态 `usb_suspended`)仍算已挂载。重排按稳定设备 id 保持目标。Web UI 可直接选择目标,与热键共用以下流程;反向轮换只由 Windows 的 Ctrl+XButton2 提供,不提供直接跳转热键。
 
 活动设备断线、USB 卸载、删除或禁用时立即回 LOCAL;自动重连成功后仍保持 LOCAL。非活动设备只收发心跳、状态和配置,不接收输入。
 
@@ -316,6 +332,8 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 每条排队输入带本地 generation 和会话实例标识,writer 编码前再次验证,旧代数据或旧连接回调不得污染新会话。每设备保留独立 Conn、GCM、seq、缓冲区和队列。切换请求串行执行,进行中只保留最后一个用户目标请求;LOCAL/故障回退优先取消远程切换。
 
+用户在切换进行中选择 LOCAL 是取消,不是故障,不关闭任何会话:旧远程目标仍在释放时等它的 Released 后回 LOCAL;正在等待新目标释放或 Linux 抓取边界时,放弃该等待(generation 递增,迟到结果被忽略)并立即回 LOCAL。只有释放失败/超时、设备断线、USB 卸载、输入队列溢出等故障才关闭连接。
+
 每设备独立生命周期管理器负责连接、握手、并行收发及重连,退避为 1 s、2 s、5 s 并加入随机抖动。输入队列溢出视为状态失步,关闭活动连接并恢复本机输入;Linux 先解除抓取,同步物理状态后才允许恢复抓取转发。
 
 ## 9. Web UI 与安全
@@ -324,11 +342,13 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 改为 SSE 状态推送 + POST 操作，不引入 WebSocket 依赖。SSE 只发脱敏状态，限制事件长度/客户端数，并处理断线恢复；POST 仍做 Host、Origin 和 CSRF 校验。
 
-不再允许任何访问初始页面的进程直接取得写 token。启动生成短时、一次性的启动凭据；以 URL fragment 交给当前用户浏览器，页面立即清除 fragment，并通过同源 POST 换取随机 HttpOnly、SameSite=Strict、Path=/ 的会话 cookie。启动凭据只用一次且过期，不进入 query、日志或普通页面响应。cookie 不取代写请求的精确 Origin/CSRF 防护。
+访问控制以登录密码为准。`POST /api/login` 校验密码后签发随机 HttpOnly、SameSite=Strict、Path=/ 的会话 cookie(8 h)及 CSRF。初始密码为 `admin`,Web UI 可修改(8..128 字节)。密码在客户端配置文件中以 `web_password_md5 = md5("espkvm_" + 密码)` 的小写十六进制保存;旧版 PBKDF2 记录在下次成功登录时转换。
 
-该模型缓解其他本地用户直接 curl 页面取得权限；不是同一 OS 用户下恶意进程的隔离边界，也不把浏览器命令行/历史/扩展视作秘密保险箱。多用户部署仍须每用户私有凭据及启动通道，必要时使用 OS 认证 IPC。
+每个会话记录签发时的密码摘要,每次请求及 SSE 每次推送都与配置中的当前摘要比较;任何进程(本程序、另一实例或手工修改配置)改了密码,旧会话立即失效,必须用新密码重新登录。可选的 `-bootstrap-file` 一次性启动凭据(URL fragment,2 分钟过期)仅在密码仍为默认值时可用,改密后被拒绝。cookie 不取代写请求的精确 Origin/CSRF 防护。
 
-- 精确校验 Host 与写请求 Origin，cookie 及 CSRF 均须验证；拒绝 null/缺省 Origin 的写请求。GET 无副作用；敏感读取和 SSE 须 cookie 与 CSRF 请求头；CSRF 只从启动交换获取并放在同源 sessionStorage，不能凭 cookie 重新领取。SSE 用 fetch 流读取，不把凭据放入 query；不启用宽泛 CORS。
+默认密码未修改前,本机任何进程都能登录,首次使用应立即改密。未加盐 MD5 只防止明文存放,不能抵抗拿到配置文件后的离线猜测;配置文件仍须按下文权限保护,登录接口目前不限速。该模型不是同一 OS 用户下恶意进程的隔离边界,多用户部署仍须每用户私有凭据,必要时使用 OS 认证 IPC。
+
+- 精确校验 Host 与写请求 Origin，cookie 及 CSRF 均须验证；拒绝 null/缺省 Origin 的写请求。GET 无副作用；敏感读取和 SSE 须 cookie 与 CSRF 请求头；CSRF 只从登录(或启动交换)获取并放在同源 sessionStorage，不能凭 cookie 重新领取。SSE 用 fetch 流读取，不把凭据放入 query；不启用宽泛 CORS。
 - 功能：设备管理与排序、统一切换、热键录入、串口配网及 pending 查询/丢弃、设备配置、脱敏状态与 RTT 指标。
 - 本地凭据文件 Linux 0600/目录0700；Windows 当前用户与系统 ACL；原子替换并持有稳定 sidecar 跨进程锁。pending 同样保护，日志不输出凭据。
 
@@ -345,7 +365,7 @@ WSL2 (Ubuntu 22.04/24.04)
 Windows
  ├─ 烧录:flash.ps1 读取打包 manifest,调用 Windows esptool
  │        (打包后通过 WSL UNC 路径读取自包含烧录包)
- └─ 调试日志:独立通道或禁用配网服务的日志构建;配网 UART 不运行文本 monitor
+ └─ 调试日志:espkvm ctl -serial COMx serial-log 解析配网 UART 上的 log 帧;不运行文本 monitor
 ```
 
 - 工程放 WSL 内部文件系统,编辑用 VS Code + WSL 扩展 + Espressif IDF 扩展。

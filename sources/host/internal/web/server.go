@@ -38,9 +38,14 @@ type State struct {
 	Hotkey  []uint16       `json:"hotkey"`
 }
 type Operation func(context.Context, string, json.RawMessage) (any, error)
+
+// PasswordAuth is the only way into the UI once the password has been changed.
+// The stamp identifies the stored password; a different stamp voids sessions.
 type PasswordAuth interface {
 	VerifyWebPassword(string) bool
 	ChangeWebPassword(current, next string) error
+	WebPasswordStamp() string
+	WebPasswordIsDefault() bool
 }
 type defaultPasswordAuth struct{}
 
@@ -48,9 +53,12 @@ func (defaultPasswordAuth) VerifyWebPassword(password string) bool { return pass
 func (defaultPasswordAuth) ChangeWebPassword(string, string) error {
 	return errors.New("password change is unavailable")
 }
+func (defaultPasswordAuth) WebPasswordStamp() string   { return "default" }
+func (defaultPasswordAuth) WebPasswordIsDefault() bool { return true }
 
 type authorization struct {
 	csrf    string
+	stamp   string
 	expires time.Time
 }
 type Server struct {
@@ -148,7 +156,7 @@ func (s *Server) issueSession(w http.ResponseWriter) error {
 	if e != nil {
 		return e
 	}
-	s.sessions[cookie] = authorization{csrf: csrf, expires: time.Now().Add(8 * time.Hour)}
+	s.sessions[cookie] = authorization{csrf: csrf, stamp: s.auth.WebPasswordStamp(), expires: time.Now().Add(8 * time.Hour)}
 	http.SetCookie(w, &http.Cookie{Name: "espkvm", Value: cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
 	writeJSON(w, map[string]string{"csrf": csrf})
 	return nil
@@ -228,6 +236,12 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// After the password is changed only the new password grants access.
+	if !s.auth.WebPasswordIsDefault() {
+		s.bootstrap = ""
+		http.Error(w, "password login required", http.StatusUnauthorized)
+		return
+	}
 	if s.bootstrap == "" || time.Now().After(s.expires) || subtle.ConstantTimeCompare([]byte(req.Token), []byte(s.bootstrap)) != 1 {
 		http.Error(w, "bootstrap expired or consumed", http.StatusUnauthorized)
 		return
@@ -244,9 +258,10 @@ func (s *Server) authorized(next func(http.ResponseWriter, *http.Request, author
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+		stamp := s.auth.WebPasswordStamp()
 		s.mu.Lock()
 		a, ok := s.sessions[cookie.Value]
-		if ok && time.Now().After(a.expires) {
+		if ok && (time.Now().After(a.expires) || stamp == "" || a.stamp != stamp) {
 			delete(s.sessions, cookie.Value)
 			ok = false
 		}
@@ -277,7 +292,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, a authorization)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		if time.Now().After(a.expires) {
+		if time.Now().After(a.expires) || s.auth.WebPasswordStamp() != a.stamp {
 			return
 		}
 		body, e := json.Marshal(s.state())

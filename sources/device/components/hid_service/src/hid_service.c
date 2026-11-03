@@ -53,12 +53,28 @@ static const char *TAG = "ek_hid";
 static hid_engine engine;
 static keep_awake awake;
 static bool compatible;
-static bool usb_present, usb_suspended, wake_requested;
+static bool usb_present, usb_suspended;
+// A sleeping host may reset the bus while resuming; within this grace period a
+// detach is reported as "waking" so the selected target survives the wake.
+#define WAKE_GRACE_MS 20000u
+static uint64_t waking_until, wake_at;
 static atomic_uchar leds;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t last_report[3][33], last_size[3], idle[3];
 static uint64_t last_at[3];
+static uint64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+// Caller holds lock. Suspended, or between a wake-time bus reset and re-enumeration:
+// the host cannot see stale input from us, and pending-release runs before input.
+static bool sleeping(uint64_t now) {
+    return usb_suspended || (!usb_present && now < waking_until);
+}
+static void use(uint8_t i) {
+    portENTER_CRITICAL(&lock);
+    hid_engine_use(&engine, i);
+    portEXIT_CRITICAL(&lock);
+}
 const uint8_t *tud_hid_descriptor_report_cb(uint8_t i) {
+    use(i);
     return i == KEYBOARD   ? (compatible ? boot_descriptor : nkro_descriptor)
            : i == MOUSE    ? mouse_descriptor
            : i == CONSUMER ? consumer_descriptor
@@ -68,6 +84,7 @@ uint16_t tud_hid_get_report_cb(uint8_t i, uint8_t id, hid_report_type_t type, ui
                                uint16_t size) {
     if (i >= 3 || id)
         return 0;
+    use(i);
     if (i == KEYBOARD && type == HID_REPORT_TYPE_OUTPUT && size) {
         out[0] = atomic_load(&leds);
         return 1;
@@ -94,6 +111,8 @@ uint16_t tud_hid_get_report_cb(uint8_t i, uint8_t id, hid_report_type_t type, ui
 }
 void tud_hid_set_report_cb(uint8_t i, uint8_t id, hid_report_type_t type, const uint8_t *data,
                            uint16_t size) {
+    if (i < 3)
+        use(i);
     if (i == KEYBOARD && !id && type == HID_REPORT_TYPE_OUTPUT && size == 1)
         atomic_store(&leds, data[0] & 7);
 }
@@ -101,6 +120,7 @@ void tud_hid_set_protocol_cb(uint8_t i, uint8_t protocol) {
     if (i != KEYBOARD)
         return;
     portENTER_CRITICAL(&lock);
+    hid_engine_use(&engine, i);
     hid_engine_protocol(&engine, compatible || protocol == HID_PROTOCOL_BOOT,
                         esp_timer_get_time() / 1000);
     portEXIT_CRITICAL(&lock);
@@ -109,29 +129,33 @@ bool tud_hid_set_idle_cb(uint8_t i, uint8_t rate) {
     if (i >= 3)
         return false;
     portENTER_CRITICAL(&lock);
+    hid_engine_use(&engine, i);
     idle[i] = rate;
     portEXIT_CRITICAL(&lock);
     return true;
 }
 void tud_hid_report_complete_cb(uint8_t i, const uint8_t *report, uint16_t size) {
+    if (i >= 3)
+        return;
     portENTER_CRITICAL(&lock);
-    if (engine.in_flight && engine.interface == i) {
-        if (size <= 33) {
-            memcpy(last_report[i], report, size);
-            last_size[i] = (uint8_t)size;
-            last_at[i] = esp_timer_get_time() / 1000;
-        }
-        hid_engine_complete(&engine, true);
+    // Whatever completed is what the host now holds, including late reports.
+    if (size <= 33) {
+        memcpy(last_report[i], report, size);
+        last_size[i] = (uint8_t)size;
+        last_at[i] = now_ms();
     }
+    hid_engine_report_done(&engine, i);
     portEXIT_CRITICAL(&lock);
 }
 static void device_event(tinyusb_event_t *event, void *arg) {
     (void)arg;
+    uint64_t now = now_ms();
+    bool waking = false;
     portENTER_CRITICAL(&lock);
     if (event->id == TINYUSB_EVENT_ATTACHED) {
         usb_present = true;
         usb_suspended = false;
-        wake_requested = false;
+        waking_until = 0;
         hid_engine_attach(&engine);
         engine.six_kro = compatible;
         memset(last_report, 0, sizeof(last_report));
@@ -143,17 +167,20 @@ static void device_event(tinyusb_event_t *event, void *arg) {
     } else if (event->id == TINYUSB_EVENT_SUSPENDED) {
         usb_present = true;
         usb_suspended = true;
-        wake_requested = false;
+        wake_at = 0;
         hid_engine_suspend(&engine);
     } else if (event->id == TINYUSB_EVENT_RESUMED) {
         usb_present = true;
         usb_suspended = false;
-        wake_requested = false;
+        waking_until = now + WAKE_GRACE_MS; // The host may still reset the bus.
         hid_engine_resume(&engine);
     } else if (event->id == TINYUSB_EVENT_DETACHED) {
+        if (usb_suspended || now < waking_until) {
+            waking_until = now + WAKE_GRACE_MS;
+            waking = true;
+        }
         usb_present = false;
         usb_suspended = false;
-        wake_requested = false;
         hid_engine_detach(&engine);
     }
     portEXIT_CRITICAL(&lock);
@@ -162,7 +189,9 @@ static void device_event(tinyusb_event_t *event, void *arg) {
     else if (event->id == TINYUSB_EVENT_RESUMED)
         ESP_LOGI(TAG, "USB host resumed; restoring neutral HID state");
     else if (event->id == TINYUSB_EVENT_DETACHED)
-        ESP_LOGI(TAG, "USB HID host detached");
+        ESP_LOGI(TAG, "%s",
+                 waking ? "USB bus reset while host wakes; keeping session for re-enumeration"
+                        : "USB HID host detached");
 }
 uint32_t hid_release(void) {
     portENTER_CRITICAL(&lock);
@@ -172,22 +201,35 @@ uint32_t hid_release(void) {
     return gen;
 }
 bool hid_ready(uint32_t generation) {
+    uint64_t now = now_ms();
     portENTER_CRITICAL(&lock);
-    bool ready = hid_engine_ready(&engine) && engine.generation == generation;
+    // A sleeping host is released by suspend itself; pending-release still runs first
+    // after it resumes, so the switch can complete and input can then wake it.
+    bool ready = engine.generation == generation && (hid_engine_ready(&engine) || sleeping(now));
     portEXIT_CRITICAL(&lock);
     return ready;
 }
 bool hid_mounted(void) {
+    uint64_t now = now_ms();
     portENTER_CRITICAL(&lock);
-    bool value = usb_present;
+    bool value = usb_present || sleeping(now);
+    portEXIT_CRITICAL(&lock);
+    return value;
+}
+bool hid_sleeping(void) {
+    uint64_t now = now_ms();
+    portENTER_CRITICAL(&lock);
+    bool value = sleeping(now);
     portEXIT_CRITICAL(&lock);
     return value;
 }
 void hid_wake_host(void) {
     bool request = false;
+    uint64_t now = now_ms();
     portENTER_CRITICAL(&lock);
-    if (usb_present && usb_suspended && !wake_requested) {
-        wake_requested = true;
+    // Retry on later input: the first attempt may precede the host's wake readiness.
+    if (usb_present && usb_suspended && (!wake_at || now - wake_at >= 1000)) {
+        wake_at = now;
         request = true;
     }
     portEXIT_CRITICAL(&lock);
@@ -253,7 +295,11 @@ bool hid_submit(const ek_Msg *m, uint32_t generation) {
     uint64_t now = esp_timer_get_time() / 1000;
     uint32_t random = esp_random();
     portENTER_CRITICAL(&lock);
-    if (usb_present && usb_suspended) {
+    if (sleeping(now)) {
+        if (engine.generation != generation) {
+            portEXIT_CRITICAL(&lock);
+            return false;
+        }
         bool changed = event.kind == HID_KEYBOARD
             ? memcmp(&event.value.keyboard, &engine.keyboard, sizeof(engine.keyboard)) != 0
             : event.kind == HID_MOUSE
@@ -303,20 +349,13 @@ static void task(void *arg) {
             // submission retains the FIFO item and every unconsumed movement remainder.
             send = hid_engine_next(&engine, now);
             if (!send && hid_engine_ready(&engine)) {
-                for (unsigned j = 0; j < 3; j++)
+                for (unsigned j = 0; j < 3 && !send; j++)
                     if (idle[j] && now - last_at[j] >= idle[j] * 4u) {
-                        engine.interface = j;
-                        engine.report_size = last_size[j];
-                        memcpy(engine.report, last_report[j], last_size[j]);
+                        uint8_t repeat[33];
+                        memcpy(repeat, last_report[j], last_size[j]);
                         if (j == MOUSE)
-                            memset(engine.report + 1, 0, 6); // Never repeat relative movement.
-                        engine.barrier_report = false;
-                        engine.submitted_generation = engine.generation;
-                        engine.submitted_epoch = engine.epoch;
-                        engine.submitted_at = now;
-                        engine.in_flight = true;
-                        send = true;
-                        break;
+                            memset(repeat + 1, 0, 6); // Never repeat relative movement.
+                        send = hid_engine_repeat(&engine, j, repeat, last_size[j], now);
                     }
             }
             if (send) {

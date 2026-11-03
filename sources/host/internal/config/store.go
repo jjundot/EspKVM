@@ -3,6 +3,7 @@ package config
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -39,8 +40,9 @@ type Data struct {
 	Devices         []Device  `json:"devices"`
 	Hotkey          []uint16  `json:"hotkey"`
 	Pending         []Pending `json:"pending"`
-	WebPasswordSalt string    `json:"web_password_salt,omitempty"`
-	WebPasswordHash string    `json:"web_password_hash,omitempty"`
+	WebPasswordMD5  string    `json:"web_password_md5,omitempty"`
+	WebPasswordSalt string    `json:"web_password_salt,omitempty"` // Legacy; migrated on login.
+	WebPasswordHash string    `json:"web_password_hash,omitempty"` // Legacy; migrated on login.
 }
 type Store struct {
 	mu      sync.Mutex
@@ -151,23 +153,45 @@ func applyDefaults(d *Data) (bool, error) {
 		d.Hotkey = input.DefaultHotkey()
 		changed = true
 	}
-	if d.WebPasswordSalt == "" && d.WebPasswordHash == "" {
-		salt := make([]byte, 16)
-		if _, e := rand.Read(salt); e != nil {
-			return false, e
-		}
-		d.WebPasswordSalt = hex.EncodeToString(salt)
-		d.WebPasswordHash = hex.EncodeToString(passwordDigest("admin", salt))
+	if d.WebPasswordMD5 == "" && d.WebPasswordSalt == "" && d.WebPasswordHash == "" {
+		d.WebPasswordMD5 = webPasswordMD5(DefaultWebPassword)
 		changed = true
-	} else if d.WebPasswordSalt == "" || d.WebPasswordHash == "" {
+	} else if d.WebPasswordMD5 != "" && len(d.WebPasswordMD5) != 2*md5.Size {
 		return false, errors.New("invalid web password data in config")
 	}
 	return changed, nil
 }
 
-const passwordIterations = 120000
+// DefaultWebPassword is in effect until the user changes it.
+const DefaultWebPassword = "admin"
 
-func passwordDigest(password string, salt []byte) []byte {
+// The web password is stored as md5("espkvm_" + password), lowercase hex.
+func webPasswordMD5(password string) string {
+	sum := md5.Sum([]byte("espkvm_" + password))
+	return hex.EncodeToString(sum[:])
+}
+
+func passwordMatches(d Data, password string) bool {
+	if d.WebPasswordMD5 != "" {
+		return subtle.ConstantTimeCompare([]byte(webPasswordMD5(password)), []byte(d.WebPasswordMD5)) == 1
+	}
+	return legacyPasswordMatches(d, password)
+}
+
+// legacyPasswordMatches verifies the former salted PBKDF2-HMAC-SHA256 record,
+// which is converted to the md5 form on the next successful login.
+func legacyPasswordMatches(d Data, password string) bool {
+	salt, e := hex.DecodeString(d.WebPasswordSalt)
+	if e != nil || len(salt) != 16 {
+		return false
+	}
+	expected, e := hex.DecodeString(d.WebPasswordHash)
+	if e != nil || len(expected) != sha256.Size {
+		return false
+	}
+	return subtle.ConstantTimeCompare(legacyDigest(password, salt), expected) == 1
+}
+func legacyDigest(password string, salt []byte) []byte {
 	mac := hmac.New(sha256.New, []byte(password))
 	mac.Write(salt)
 	var block [4]byte
@@ -175,7 +199,7 @@ func passwordDigest(password string, salt []byte) []byte {
 	mac.Write(block[:])
 	u := mac.Sum(nil)
 	result := append([]byte(nil), u...)
-	for i := 1; i < passwordIterations; i++ {
+	for i := 1; i < 120000; i++ {
 		mac.Reset()
 		mac.Write(u)
 		u = mac.Sum(u[:0])
@@ -186,52 +210,59 @@ func passwordDigest(password string, salt []byte) []byte {
 	return result
 }
 
-func passwordMatches(d Data, password string) bool {
-	salt, e := hex.DecodeString(d.WebPasswordSalt)
-	if e != nil || len(salt) != 16 {
-		return false
-	}
-	expected, e := hex.DecodeString(d.WebPasswordHash)
-	if e != nil || len(expected) != sha256.Size {
-		return false
-	}
-	actual := passwordDigest(password, salt)
-	return subtle.ConstantTimeCompare(actual, expected) == 1
+func setWebPassword(d *Data, password string) {
+	d.WebPasswordMD5 = webPasswordMD5(password)
+	d.WebPasswordSalt = ""
+	d.WebPasswordHash = ""
 }
 
 func (s *Store) VerifyWebPassword(password string) bool {
-	d, e := s.Load()
-	return e == nil && len(password) <= 128 && passwordMatches(d, password)
+	if len(password) > 128 {
+		return false
+	}
+	ok := false
+	e := s.Update(func(d *Data) error {
+		if ok = passwordMatches(*d, password); !ok || d.WebPasswordMD5 != "" {
+			return errNoChange
+		}
+		setWebPassword(d, password)
+		return nil
+	})
+	return ok && (e == nil || errors.Is(e, errNoChange))
 }
+
+// WebPasswordStamp identifies the stored password; sessions issued under another
+// stamp are invalid, so a change made by any process requires the new password.
+func (s *Store) WebPasswordStamp() string {
+	d, e := s.Load()
+	if e != nil {
+		return ""
+	}
+	if d.WebPasswordMD5 != "" {
+		return d.WebPasswordMD5
+	}
+	return d.WebPasswordHash
+}
+
+// WebPasswordIsDefault reports whether the password was never changed.
+func (s *Store) WebPasswordIsDefault() bool {
+	d, e := s.Load()
+	return e == nil && passwordMatches(d, DefaultWebPassword)
+}
+
+var errNoChange = errors.New("no change")
 
 func (s *Store) ChangeWebPassword(current, next string) error {
 	if len(next) < 8 || len(next) > 128 {
 		return errors.New("new password must be 8 to 128 bytes")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	unlock, e := s.lockFile()
-	if e != nil {
-		return e
-	}
-	defer unlock()
-	d, e := s.load()
-	if e != nil {
-		return e
-	}
-	if _, e = applyDefaults(&d); e != nil {
-		return e
-	}
-	if !passwordMatches(d, current) {
-		return errors.New("current password is incorrect")
-	}
-	salt := make([]byte, 16)
-	if _, e = rand.Read(salt); e != nil {
-		return e
-	}
-	d.WebPasswordSalt = hex.EncodeToString(salt)
-	d.WebPasswordHash = hex.EncodeToString(passwordDigest(next, salt))
-	return s.save(d)
+	return s.Update(func(d *Data) error {
+		if !passwordMatches(*d, current) {
+			return errors.New("current password is incorrect")
+		}
+		setWebPassword(d, next)
+		return nil
+	})
 }
 func (s *Store) load() (Data, error) {
 	b, e := os.ReadFile(s.path)

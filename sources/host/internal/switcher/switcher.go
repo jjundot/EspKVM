@@ -268,6 +268,22 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		view.Error = ""
 		publish()
 	}
+	// cancel returns a switch in progress to LOCAL without closing any session.
+	// An old remote target still finishes its release barrier first; a new
+	// target's pending barrier is abandoned and its late result ignored.
+	cancel := func() {
+		queued = ""
+		desired = Local
+		if view.Phase == "waiting-local-release" || (view.Phase == "old-release" && view.Target != Local) {
+			publish()
+			return
+		}
+		view.Generation++
+		pendingLink = nil
+		motion.Clear()
+		suppress()
+		activate()
+	}
 	request = func(id string, fault bool) {
 		debuglog.Printf("switcher", "request target=%s fault=%t current=%s phase=%s", id, fault, view.Target, view.Phase)
 		if id == "" {
@@ -282,7 +298,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		}
 		if view.Phase != "idle" {
 			if id == Local {
-				fallback("")
+				cancel()
 			} else {
 				queued = id
 			}

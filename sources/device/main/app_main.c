@@ -3,11 +3,14 @@
 #include "esp_err.h"
 #include "hid_service.h"
 #include "network_service.h"
+#include "serial_log.h"
 #include "serial_service.h"
 #include "esp_log.h"
 #include "esp_err.h"
 static const char *TAG = "espkvm";
 void app_main(void) {
+    // Frame logs before anything else writes to the provisioning UART.
+    ESP_ERROR_CHECK(serial_log_start());
     ESP_LOGI(TAG, "boot: config init");
     ESP_ERROR_CHECK(config_init());
     static ek_Config config;

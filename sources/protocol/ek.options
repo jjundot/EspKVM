@@ -13,3 +13,4 @@ ek.SerialInfo.mac     max_size:6
 ek.SerialInfo.fw_version max_size:64
 ek.Status.fw_version max_size:64
 ek.Auth.owner max_size:16
+ek.SerialLog.text max_size:256

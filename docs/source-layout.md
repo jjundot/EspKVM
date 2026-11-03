@@ -1,102 +1,82 @@
 # 源码目录与 WSL 开发约定
 
-本文规定实施时的目录边界。协议行为以 [设计决议](esp32-kvm-decisions.md) 及其 [2026-11-01 修订](design-review-2026-11-01.md) 为准；冲突时采用修订。目录及构建产物位置以本文为准。以下包含规划，未落地部分以实施状态为准。
+本文规定目录边界，下面的目录树与当前仓库一致。协议与行为以 [v11 设计决议](esp32-kvm-decisions.md) 为唯一基线；[2026-11-01 修订](design-review-2026-11-01.md) 已全部并入 v11，仅作归档。目录及构建产物位置以本文为准。
 
 ## 仓库结构
 
-采用单仓库,一个 ESP-IDF 工程、一个 Go module。工作副本放在 WSL ext4,例如 `~/src/EspKVM`,不用 `/mnt/c` 或 `/mnt/d` 作为编译工作目录。
+采用单仓库,一个 ESP-IDF 工程、一个 Go module。工作副本可放在 WSL ext4(例如 `~/src/EspKVM`);放在 `/mnt/d` 时 `scripts/wsl/build.sh` 会把源码同步到 `~/.cache/esp-kvm/vscode/<hash>/source` 再编译,结果同步回 `build/`。
 
 ```text
 EspKVM/
 ├── README.md                      # 环境准备、构建、烧录、运行入口
-├── CMakeLists.txt                 # 根构建入口,Ninja 调度 host/device/codegen
-├── CMakePresets.json              # WSL 默认及 host 平台构建预设
-├── cmake/                         # 协议生成、Go 构建和 IDF 子构建模块
-├── .gitignore
-├── .github/workflows/             # 协议检查、IDF 构建、Linux/Windows 构建
+├── CMakeLists.txt                 # 根构建入口,Ninja 调度 host/device/codegen 及原生测试
+├── CMakePresets.json              # host / device 两个预设
+├── cmake/
+│   ├── Protocol.cmake             # nanopb / protoc-gen-go 生成规则
+│   ├── ProtocolVectors.cmake      # 原生 C 测试、PSA 向量、C 会话与 Go 互通测试
+│   └── BuildHost.cmake            # Go 客户端与探针构建
+├── .github/workflows/             # device.yml、host.yml、interop.yml
 ├── docs/
-│   ├── esp32-kvm-decisions.md      # 协议与行为规范
-│   └── source-layout.md           # 本文
-├── sources/                      # 仅放项目源码与协议定义
+│   ├── esp32-kvm-decisions.md     # 协议与行为规范(唯一基线)
+│   ├── source-layout.md           # 本文
+│   ├── keep-awake.md              # 防休眠与睡眠目标机切换
+│   ├── implementation-status.md   # 实施状态
+│   ├── validation-2026-11-02.md   # 验收记录
+│   └── design-review-2026-11-01.md # 已并入 v11 的修订归档
+├── sources/
 │   ├── protocol/
-│   │   ├── ek.proto                   # 唯一消息定义
-│   │   ├── ek.options                 # nanopb 字段上限
-│   │   ├── wire-format.md             # 实现阶段拆出的帧布局/状态机规范
-│   │   └── testdata/                  # C/Go 共用字节向量与期望结果
+│   │   ├── ek.proto               # 唯一消息定义
+│   │   ├── ek.options             # nanopb 字段上限
+│   │   ├── wire-format.md         # 帧布局/状态机摘要
+│   │   └── testdata/              # frames.txt(串口帧)、v2.txt(握手/GCM 向量)
 │   ├── device/
-│   │   ├── CMakeLists.txt             # ESP-IDF 项目入口
-│   │   ├── sdkconfig.defaults         # S3、USB、网络和任务默认配置
+│   │   ├── CMakeLists.txt         # ESP-IDF 项目入口
+│   │   ├── sdkconfig.defaults
 │   │   ├── partitions.csv
-│   │   ├── dependencies.lock          # 锁定 IDF 组件依赖
-│   │   ├── main/
-│   │   │   ├── CMakeLists.txt
-│   │   │   ├── idf_component.yml      # 声明 TinyUSB/nanopb 等依赖
-│   │   │   └── app_main.c             # 组装组件、启动任务,不承载业务逻辑
+│   │   ├── dependencies.lock      # 锁定 IDF 组件依赖
+│   │   ├── main/app_main.c        # 组装组件、启动服务,不承载业务逻辑
 │   │   └── components/
-│   │       ├── protocol/           # 共享头部编解码、CRC、字段校验、生成消息
-│   │       │   ├── CMakeLists.txt
-│   │       │   ├── include/           # 对外 frame.h 等接口
-│   │       │   ├── src/
-│   │       │   └── test/              # 帧/CRC/消息校验及跨语言向量测试
-│   │       ├── config/             # 配置校验、NVS 事务,串口/TCP 共用
-│   │       ├── wifi/               # STA、静态 IP、重连
-│   │       ├── serial/             # UART、Magic 重同步、配网请求分发
-│   │       ├── session/            # TCP、认证、GCM、seq、心跳、看门狗
-│   │       └── hid/                # TinyUSB 描述符、FIFO、释放屏障
+│   │       ├── protocol/          # frame.c(头部/CRC/串口解析器)、ek_crypto.c(PSA)、message_validate.c
+│   │       ├── config/            # 配置校验、NVS 双槽事务,串口/TCP 共用;test/ 含 FreeRTOS/NVS 桩
+│   │       ├── serial/            # serial_service.c(配网请求)、serial_log.c(日志封帧)
+│   │       ├── network/           # WiFi STA 静态 IP、TCP accept、握手、GCM、心跳、看门狗;test/ 为 POSIX 适配
+│   │       ├── hid_reports/       # 可移植核心:报告编码器、hid_engine(FIFO/屏障)、keep_awake
+│   │       └── hid_service/       # TinyUSB 描述符与回调,驱动 hid_engine
 │   └── host/
-│       ├── go.mod
-│       ├── go.sum
-│       ├── cmd/
-│       │   └── espkvm/main.go         # 常驻客户端与 Web UI；ctl 子命令入口
+│       ├── go.mod / go.sum
+│       ├── cmd/espkvm/
+│       │   ├── main.go            # 常驻客户端与 Web UI;ctl 子命令入口
+│       │   ├── browser_*.go       # 平台浏览器启动
+│       │   ├── ui/                # go:embed 的原生 HTML/CSS/JS
+│       │   └── app.ico/app.png/app_windows_amd64.syso
 │       └── internal/
-│           ├── protocol/
-│           │   ├── pb/ek.pb.go        # 构建自动生成,忽略不提交
-│           │   ├── frame.go           # 同一 12B header 编解码
-│           │   ├── crc.go
-│           │   └── validate.go
-│           ├── session/               # TCP 握手/GCM/收发/生命周期
-│           ├── serialcfg/             # 串口帧读取、重同步、配网事务
-│           ├── input/                 # 平台无关事件接口、每设备状态聚合
-│           │   ├── input_windows.go   # Windows 钩子、Raw Input、回注
-│           │   └── input_linux.go     # evdev、grab、uinput、热插拔
-│           ├── keymap/                # 显式扫描码/KEY_* 到 HID Usage 映射
-│           ├── switcher/              # 唯一 dispatcher 与切换状态机
-│           ├── config/                # 客户端配置、pending 事务、权限
-│           └── web/
-│               ├── server.go          # HTTP/WS、Host/Origin/token 校验
-│               ├── embed.go           # go:embed assets/*
-│               └── assets/            # 初版原生 HTML/CSS/JS,不引入前端构建链
+│           ├── protocol/          # frame.go(头部/CRC/串口解析器)、crypto.go、validate.go
+│           │   └── pb/ek.pb.go    # 构建生成,忽略不提交
+│           ├── session/           # TCP 握手/GCM/writer/释放屏障/RTT
+│           ├── serialcfg/         # 串口单请求事务、日志帧读取
+│           ├── input/             # 平台无关事件、物理状态/引用计数、热键、鼠标合并
+│           ├── capture/           # source_windows.go(钩子/Raw Input/回注)、source_linux.go(evdev/grab)、gate.go
+│           ├── keymap/            # 扫描码/KEY_* 到 HID Usage 映射
+│           ├── switcher/          # 唯一 dispatcher 与切换状态机
+│           ├── devices/           # 每设备生命周期、重连、配置请求
+│           ├── config/            # 客户端配置、pending 事务、Web 密码、文件权限与锁
+│           ├── control/           # Web/CLI 共用的业务操作
+│           ├── web/server.go      # HTTP API、登录/会话、Host/Origin/CSRF、SSE
+│           ├── cli/               # espkvm ctl
+│           └── debuglog/
 ├── scripts/
-│   ├── wsl/
-│   │   ├── bootstrap.sh           # 检查/准备固定版本开发环境
-│   │   ├── check-toolchain.sh     # 检查固定版本生成器与工具链
-│   │   └── package-device.sh    # 生成 Windows 可直接烧录的包
-│   └── windows/
-│       ├── flash.ps1              # 在 Windows 调用 esptool 操作 COM
-│       └── build-host.ps1       # Windows 原生依赖构建/验证入口
-├── tools/
-│   ├── versions.env               # IDF、Go、protoc、生成器版本
-│   └── requirements-proto.txt     # 固定 nanopb/protobuf 生成依赖
-├── packaging/
-│   ├── linux/                    # udev 规则、安装/卸载脚本
-│   └── windows/                  # 分发与安装资源
+│   ├── wsl/                       # bootstrap、check-toolchain、build、build-snapshot、package-device、verify-host
+│   └── windows/                   # flash.ps1、build-host.ps1
+├── tools/                         # versions.env、generate.py、generate_vectors.cjs、package_device.py 及依赖清单
+├── packaging/linux/               # udev 规则、安装/卸载脚本
 ├── experiments/
-│   ├── windows-input/            # M0 平台验证,不被正式程序依赖
-│   └── linux-input/
-└── build/                        # 所有可重建产物,不提交
-    ├── host/
-    │   ├── cmake/                # 客户端 CMake/Ninja
-    │   └── bin/
-    │       ├── windows/          # Windows amd64 可执行文件
-    │       └── linux/            # Linux amd64 可执行文件
-    ├── device/
-    │   ├── cmake/                # 设备 CMake 编排
-    │   ├── firmware/             # IDF 配网固件及生成的 C 协议
-    │   ├── hid-selftest/          # 独立 M1 IDF 构建
-    │   ├── config/               # 重建保留的配置
-    │   ├── deps/                 # 固件第三方源码
-    │   └── flash/                # firmware/、hid-selftest/ 烧录包
-    └── tools/                    # 共用生成工具
+│   ├── usb-hid/                   # M1 独立 IDF 工程
+│   ├── windows-input/             # M0 Windows 探针及原始记录
+│   └── linux-input/               # M0 Linux 探针
+└── build/                         # 所有可重建产物,不提交
+    ├── host/bin/                  # 客户端可执行文件
+    ├── device/                    # firmware/、hid-selftest/、config/、deps/、flash/
+    └── tools/                     # 共用生成工具
 ```
 
 固件各组件按需采用 `include/`、`src/`、`test/` 结构。Go 测试放在被测包旁,不要建立重复客户端源码的顶层 tests 树。需要实机的验收单独标记,不能让普通单元测试依赖串口或管理员权限。
@@ -104,12 +84,12 @@ EspKVM/
 ## 模块依赖边界
 
 - `protocol` 只负责 wire 格式、生成消息和结构校验,不访问 UART、socket、NVS、USB 或平台输入。
-- 固件 `serial` 与 `session` 都调用 `protocol` 和 `config`;TCP 输入通过 `hid` 的入队/释放接口交付,不能直接操作 TinyUSB。
+- 固件 `serial` 与 `network` 都调用 `protocol` 和 `config`;TCP 输入通过 `hid_service` 的入队/释放接口交付,不直接操作 TinyUSB。`hid_reports` 不依赖 ESP-IDF,可原生测试。
 - `config` 不反向依赖传输层。调用方负责发结果和安排重启,避免配置组件内直接重启导致应答丢失。跨组件释放/重启由应用层协调。
-- Go `switcher` 依赖输入及会话的窄接口,测试可注入假设备/时钟;web 和 CLI 调用业务服务,不直接改 target、写 Conn 或递增 seq。
+- Go `switcher` 依赖输入及会话的窄接口,测试可注入假设备/时钟;web 和 CLI 经 `control`/`devices` 调用业务服务,不直接改 target、写 Conn 或递增 seq。
 - 平台文件使用 `_windows.go`/`_linux.go` 和必要 build tags 隔离,不拆成需要互相导入的同名子包。初版只支持 Windows/Linux,其他平台显式报告不支持。
 
-共享 header 是“同一字段布局和字节向量”,不是让 Go 导入 C 头文件。C/Go 分别实现小端编解码,由共同 testdata 防止漂移。消息定义只编辑 sources/protocol/ek.proto;文档中的代码块是规范示例,落地后由链接引用实际文件,避免长期维护多份 schema。
+共享 header 是"同一字段布局和字节向量",不是让 Go 导入 C 头文件。C/Go 分别实现小端编解码,由共同 testdata 防止漂移。消息定义只编辑 sources/protocol/ek.proto;文档中的代码块是规范示例,避免长期维护多份 schema。
 
 ## 生成与构建约定
 
@@ -143,9 +123,8 @@ EspKVM/
 
 ## Windows 与 WSL 的衔接
 
-1. 以 WSL 内 `~/src/EspKVM` 为唯一 Git 工作副本,Windows 编辑器通过 WSL Remote 打开。当前 D 盘目录暂不自动迁移或删除,迁移时需保留未提交工作及 Git 状态。
+1. 当前 Git 工作副本在 D 盘(`D:\workspace\EspKVM`)。`scripts/wsl/build.sh build device|host` 在 WSL 中用 rsync 把源码同步到 `~/.cache/esp-kvm/vscode/<hash>/source` 编译,烧录包和客户端再同步回本仓库 `build/`。生成器 Python 默认取 `build/tools/proto/bin/python`,不可用时通过 `PROTO_PYTHON` 指定(如 `~/.local/opt/ek/proto312/bin/python`)。也可以把工作副本直接放在 WSL ext4 中。
 2. WSL 构建后打包 bootloader、partition table、应用等实际烧录所需 bin,并生成 manifest:包含芯片、偏移、相对文件名、flash 参数和校验值。参数从实际 IDF 构建元数据提取,不手写固定偏移。
 3. Windows flash.ps1 接收包目录和 COM 端口,通过 UNC 路径读取包,必要时复制至 Windows 临时目录。它只消费已完成的构建产物,不用 Windows esptool 直接解析带 WSL 路径的原始 flash_args。
 4. Windows 默认负责物理 COM 配网及烧录。WSL 无串口访问时可使用 Windows `espkvm ctl`;不为首次配网强制引入 usbipd。
 
-优先落地 sources/protocol/、sources/device/main、sources/device/components/protocol、sources/host/internal/protocol 和 CMake 生成规则,再逐步补组件;不提前创建只有空壳的全部目录。

@@ -134,6 +134,7 @@ func (s *linuxSource) ReleaseLocal(*input.State) error { return nil }
 func (s *linuxSource) TryLocal() (bool, error) {
 	s.mu.Lock()
 	if !s.remote {
+		s.requested = false // A cancelled switch must not grab later.
 		s.mu.Unlock()
 		return true, nil
 	}

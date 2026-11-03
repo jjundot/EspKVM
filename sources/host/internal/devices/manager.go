@@ -35,6 +35,7 @@ type View struct {
 	Enabled             bool        `json:"enabled"`
 	Connected           bool        `json:"connected"`
 	USB                 bool        `json:"usb"`
+	USBSleeping         bool        `json:"usb_sleeping"`
 	RSSI                int32       `json:"rssi"`
 	LEDs                uint32      `json:"leds"`
 	LastValid           time.Time   `json:"last_valid,omitempty"`
@@ -260,6 +261,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 					}
 					r.view.Uptime = s.UptimeS
 					r.view.USB = s.UsbMounted
+					r.view.USBSleeping = s.UsbSuspended
 					r.view.RSSI = s.Rssi
 					r.view.LEDs = s.KbLeds
 					if err := m.dispatcher.Attach(r.device.ID, conn, s.UsbMounted); err != nil {
@@ -280,6 +282,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 				r.current = nil
 				r.view.Connected = false
 				r.view.USB = false
+				r.view.USBSleeping = false
 			}
 			m.mu.Unlock()
 			m.dispatcher.Detach(r.device.ID, conn)
@@ -365,6 +368,14 @@ func (m *Manager) request(ctx context.Context, id string, message *pb.Msg) (*pb.
 			conn.Close()
 			return nil, errors.New("configuration result unknown; inspect pending before retrying")
 		case <-conn.Done():
+			// The device restarts right after CFG_RESULT; prefer a reply that arrived first.
+			select {
+			case reply := <-r.replies:
+				if reply.session == conn && message.GetCfgSet() != nil && reply.message.GetCfgResult() != nil {
+					return reply.message, nil
+				}
+			default:
+			}
 			return nil, session.ErrClosed
 		case reply := <-r.replies:
 			if reply.session != conn {

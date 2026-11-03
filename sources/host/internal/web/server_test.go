@@ -158,3 +158,46 @@ func TestSSEIsAuthenticatedAndBounded(t *testing.T) {
 		t.Fatal("SSE lifecycle failed", w.Body.String())
 	}
 }
+
+type stampAuth struct{ stamp string }
+
+func (a *stampAuth) VerifyWebPassword(p string) bool        { return p == a.stamp }
+func (a *stampAuth) ChangeWebPassword(_, next string) error { a.stamp = next; return nil }
+func (a *stampAuth) WebPasswordStamp() string               { return a.stamp }
+func (a *stampAuth) WebPasswordIsDefault() bool             { return a.stamp == "admin" }
+
+func TestPasswordChangeRequiresNewPassword(t *testing.T) {
+	auth := &stampAuth{stamp: "admin"}
+	s, token, e := NewWithAuth("127.0.0.1:62626", func() State { return State{} }, func(context.Context, string, json.RawMessage) (any, error) { return nil, nil }, nil, auth)
+	if e != nil {
+		t.Fatal(e)
+	}
+	cookie, csrf := login(t, s, token)
+	state := func() int {
+		r := request("GET", "/api/state", "")
+		r.AddCookie(cookie)
+		r.Header.Set("X-CSRF-Token", csrf)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	if state() != 200 {
+		t.Fatal("session rejected")
+	}
+	// Changed by any process, e.g. another instance or the CLI.
+	auth.stamp = "changed-elsewhere"
+	if state() != 401 {
+		t.Fatal("session issued under the old password still valid")
+	}
+	s2, token2, _ := NewWithAuth("127.0.0.1:62626", func() State { return State{} }, nil, nil, auth)
+	w := httptest.NewRecorder()
+	s2.Handler().ServeHTTP(w, request("POST", "/api/bootstrap", `{"token":"`+token2+`"}`))
+	if w.Code != 401 {
+		t.Fatal("bootstrap bypassed a changed password", w.Code)
+	}
+	w = httptest.NewRecorder()
+	s2.Handler().ServeHTTP(w, request("POST", "/api/login", `{"password":"changed-elsewhere"}`))
+	if w.Code != 200 {
+		t.Fatal("new password rejected", w.Code)
+	}
+}

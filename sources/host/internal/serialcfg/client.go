@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/protocol"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"go.bug.st/serial"
@@ -45,6 +46,35 @@ func Open(name string) (*Client, error) {
 	return &Client{port: p, seq: binary.LittleEndian.Uint32(b[:])}, nil
 }
 func (c *Client) Close() error { return c.port.Close() }
+
+// logText returns a device log frame's text; logs carry their own sequence and
+// never answer a request.
+func logText(body []byte) (string, bool) {
+	p := new(pb.SerialPacket)
+	if proto.Unmarshal(body, p) != nil || p.ProtoVer != protocol.Version || p.GetLog() == nil {
+		return "", false
+	}
+	return p.GetLog().Text, true
+}
+
+// Logs prints device log frames until the deadline or a read error.
+func (c *Client) Logs(until time.Time, print func(string)) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var buf [528]byte
+	for until.IsZero() || time.Now().Before(until) {
+		n, e := c.port.Read(buf[:])
+		if e != nil {
+			return e
+		}
+		for _, frame := range c.parser.Feed(buf[:n], time.Now()) {
+			if text, ok := logText(frame.Body); ok {
+				print(text)
+			}
+		}
+	}
+	return nil
+}
 func requestKind(p *pb.SerialPacket) byte {
 	switch p.Body.(type) {
 	case *pb.SerialPacket_InfoGet:
@@ -99,6 +129,10 @@ func (c *Client) Request(p *pb.SerialPacket) (*pb.SerialPacket, error) {
 			return nil, ErrUnknown
 		}
 		for _, frame := range c.parser.Feed(buf[:n], time.Now()) {
+			if text, ok := logText(frame.Body); ok {
+				debuglog.Printf("device", "%s", text)
+				continue
+			}
 			if frame.Seq != seq {
 				continue
 			}

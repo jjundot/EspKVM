@@ -136,6 +136,30 @@ func TestLocalCancelsPendingActivation(t *testing.T) {
 	if d.View().Target != Local || c.remote.Load() {
 		t.Fatal("late completion changed target")
 	}
+	if a.closed.Load() {
+		t.Fatal("cancel closed a healthy session")
+	}
+}
+func TestLocalCancelDuringOldReleaseKeepsSessions(t *testing.T) {
+	c := &capture{}
+	d := New(c)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+	a, b := newEndpoint(), newEndpoint()
+	d.Attach("a", a, true)
+	d.Attach("b", b, true)
+	d.Switch("a")
+	barrier(t, a) <- nil
+	wait(t, func() bool { return d.View().Target == "a" })
+	d.Switch("b")
+	old := barrier(t, a)
+	d.Switch(Local)
+	old <- nil
+	wait(t, func() bool { return d.View().Target == Local && d.View().Phase == "idle" })
+	if c.remote.Load() || a.closed.Load() || b.closed.Load() || len(b.barriers) != 0 {
+		t.Fatal("cancel must release the old target, skip the new one and keep both sessions")
+	}
 }
 func TestLinuxWaitDoesNotBlockPhysicalRelease(t *testing.T) {
 	c := &capture{}

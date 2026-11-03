@@ -21,6 +21,13 @@ import (
 
 var ErrClosed = errors.New("session closed or congested")
 
+// Release confirmation bounds. A sleeping or re-enumerating USB host can delay the
+// device's release barrier, so the bound is extended while the device reports it.
+const (
+	ReleaseTimeout         = 500 * time.Millisecond
+	SleepingReleaseTimeout = 20 * time.Second
+)
+
 type pending struct {
 	msg        *pb.Msg
 	generation uint64
@@ -50,6 +57,7 @@ type Session struct {
 	done           chan struct{}
 	once           sync.Once
 	generation     atomic.Uint64
+	sleeping       atomic.Bool
 	last           atomic.Int64
 	epoch          time.Time
 	Challenge      *pb.Challenge
@@ -238,7 +246,11 @@ func (s *Session) Release(generation uint64) <-chan error {
 	if s.releaseWaiters == nil {
 		s.releaseWaiters = map[uint32]releaseWaiter{}
 	}
-	timer := time.AfterFunc(500*time.Millisecond, s.Close)
+	timeout := ReleaseTimeout
+	if s.sleeping.Load() {
+		timeout = SleepingReleaseTimeout
+	}
+	timer := time.AfterFunc(timeout, s.Close)
 	s.releaseWaiters[id] = releaseWaiter{result, timer}
 	s.releases = append(s.releases, pending{msg: &pb.Msg{Body: &pb.Msg_ReleaseAll{ReleaseAll: &pb.ReleaseAll{Id: id}}}, barrier: id})
 	select {
@@ -373,6 +385,9 @@ func (s *Session) Run(ctx context.Context, onMessage func(*pb.Msg)) error {
 			return e
 		}
 		s.last.Store(int64(time.Since(s.epoch)))
+		if status := m.GetStatus(); status != nil {
+			s.sleeping.Store(status.UsbSuspended)
+		}
 		if h := m.GetHeartbeat(); h != nil {
 			if h.Reply {
 				s.acceptProbe(h.Id, time.Now())
