@@ -332,7 +332,7 @@ static void task(void *arg) {
         size_t n = 0;
         bool send = false;
         portENTER_CRITICAL(&lock);
-        if (keep_awake_poll(&awake, now, random) && hid_engine_ready(&engine) &&
+        if (keep_awake_poll(&awake, now) && hid_engine_ready(&engine) &&
             !engine.in_flight && !engine.count && !engine.buttons && !engine.consumer) {
             keyboard_state empty = {0};
             if (!memcmp(&engine.keyboard, &empty, sizeof(empty))) {
@@ -341,7 +341,8 @@ static void task(void *arg) {
                 move.value.mouse.x = (int)((random >> 8) % 7) - 3;
                 move.value.mouse.y = (int)((random >> 16) % 7) - 3;
                 if (!move.value.mouse.x && !move.value.mouse.y) move.value.mouse.x = 1;
-                if (hid_engine_offer(&engine, &move, engine.generation, now)) awake.moves++;
+                if (hid_engine_offer(&engine, &move, engine.generation, now))
+                    keep_awake_moved(&awake, now, random);
             }
         }
         if (!engine.in_flight && engine.mounted) {

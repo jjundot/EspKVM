@@ -28,9 +28,17 @@ unsigned keep_awake_state(const keep_awake *s, uint64_t now) {
         return KA_HOST_IDLE;
     return s->moves ? KA_ACTIVE : KA_WAITING;
 }
-bool keep_awake_poll(keep_awake *s, uint64_t now, uint32_t random) {
+// A due check stays due until a movement is made: a paused state is rechecked
+// every second and a busy USB engine on the next poll, instead of waiting for
+// another full A..B interval.
+bool keep_awake_poll(keep_awake *s, uint64_t now) {
     if (now < s->next_ms) return false;
-    schedule(s, now, random);
     unsigned state = keep_awake_state(s, now);
-    return state == KA_WAITING || state == KA_ACTIVE;
+    if (state == KA_WAITING || state == KA_ACTIVE) return true;
+    s->next_ms = now + 1000;
+    return false;
+}
+void keep_awake_moved(keep_awake *s, uint64_t now, uint32_t random) {
+    s->moves++;
+    schedule(s, now, random);
 }

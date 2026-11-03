@@ -17,5 +17,9 @@ main{width:auto;max-width:1120px;margin:0 auto;padding:48px 24px}
 .device-meta .firmware-meta{grid-column:1/-1;min-width:0}
 .device-meta .firmware-value{white-space:nowrap;overflow-wrap:normal;letter-spacing:-.02em;font-size:11px}
 .keep-awake-last-move{display:block;color:#75859a;margin-top:5px;transition:color .18s ease,text-shadow .18s ease}
+.keep-awake-status strong .dot{margin-right:7px;vertical-align:1px;transition:background .18s ease,box-shadow .18s ease}
+.keep-awake-kept .dot{background:#42d6a0;box-shadow:0 0 10px #42d6a055}
+.keep-awake-pending .dot{background:#5aa9f0;box-shadow:0 0 8px #5aa9f044}
+.device-meta .keep-awake-stopped{color:#8a96a6}.keep-awake-stopped .dot{background:#a3adba}
 .keep-awake-last-move.recent{color:#55dda5;text-shadow:0 0 10px #42d6a055}
 @media(max-width:600px){main{padding:32px 16px}}

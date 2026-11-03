@@ -12,7 +12,7 @@
   <main id="app-shell" hidden>
     <section class="intro"><div><p class="eyebrow">LOCAL HOST</p><h1>设备控制台</h1></div><button class="button primary" id="add-device">＋ 添加设备</button></section>
     <div id="notice" class="notice" hidden></div>
-    <section class="panel switch-panel"><div class="section-heading"><div><p class="eyebrow">INPUT ROUTING</p><h2>输入目标</h2></div><button class="button subtle" id="record-hotkey">录制切换热键</button></div><div id="targets" class="target-grid"></div><p id="switch-status" class="muted small"></p></section>
+    <section class="panel switch-panel"><div class="section-heading"><div><p class="eyebrow">INPUT ROUTING</p><h2>输入目标</h2></div><button class="button subtle" id="record-hotkey">录制切换热键</button></div><div id="targets" class="target-grid"></div><p id="switch-status" class="muted small"></p><label class="check muted small" id="mouse-guard-row" hidden><input type="checkbox" id="mouse-guard"><span>侧键保护：本机模式下 Ctrl + 侧键不传给本机桌面（Linux：独占带侧键的鼠标，经 “EspKVM” 虚拟鼠标转发其余输入；按设备名设置的鼠标参数需改到虚拟鼠标上）<strong id="mouse-guard-warning" class="error-text"></strong></span></label></section>
     <section class="section-heading devices-heading"><div><p class="eyebrow">PAIRED DEVICES</p><h2>设备</h2></div><span id="device-count" class="muted small"></span></section>
     <div id="devices" class="device-grid"></div>
     <section id="pending-section" class="panel" hidden><div class="section-heading"><div><p class="eyebrow">SETUP VERIFICATION</p><h2>配网待验证</h2><p class="muted small">写入前会先暂存新旧连接信息。验证新连接成功后，EspKVM 才会正式更新本机配置；如果写入结果未知，也可在这里核对设备状态。</p></div></div><div id="pending-list"></div></section>

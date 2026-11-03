@@ -33,7 +33,7 @@
 | 序列化 | **Protobuf**(固件 nanopb,客户端 protobuf-go),单一事实来源 `ek.proto` |
 | 外层帧 | 串口/TCP 共用 12 字节 ek_hdr_t:magic、len、flags、rsvd、seq;均为小端 |
 | 加密 | **AES-128-GCM**,每次连接用 PSK 派生新会话密钥 |
-| 切换热键 | **Ctrl + Alt + W 同时按下**,Web UI 可改;Windows 另有 Ctrl+鼠标侧键正/反向轮换(第 8 节) |
+| 切换热键 | **Ctrl + Alt + W 同时按下**,Web UI 可改;Windows / Linux 另有 Ctrl+鼠标侧键正/反向轮换(第 8 节) |
 | 多设备 | 客户端**同时连接多台 ESP32**,但同一时刻只控制一台;同一热键按顺序**循环切换**:本机 → DEV0 → DEV1 → … → 本机 |
 | 多设备协议/固件 | 使用同一套单会话固件,不增加跨设备协议。每台设备独立 IP、独立 PSK、独立会话;切换逻辑在客户端 |
 | 鼠标 | 仅**相对鼠标**,走 TCP;客户端累加 delta,不排队 |
@@ -274,16 +274,17 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 | 平台 | 捕获 | 拦截 |
 |---|---|---|
 | Windows | Raw Input + LL 钩子(线程 `LockOSThread` 并跑消息循环) | 钩子回调返回 1 吞掉事件;远程模式下 `ClipCursor` 锁定本机光标。钩子回调中**只入队,不做网络 IO** |
-| Linux | `/dev/input/event*`，LOCAL 被动读取 | 仅 REMOTE 使用 EVIOCGRAB，进入时全释放边界抓取；失败/退出立即解除 |
+| Linux | `/dev/input/event*`，LOCAL 被动读取 | REMOTE 使用 EVIOCGRAB，进入时全释放边界抓取；失败/退出立即解除。可选“侧键保护”开启时，LOCAL 也抓取带侧键的鼠标并经 uinput 回注 |
 
-限制:Windows 涉及完整性级别和安全桌面的行为必须分场景验证,远程控制管理权限窗口时按需提权;不承诺拦截 `Ctrl+Alt+Del`、`Win+L`。Linux 正常转发只需要选定 evdev 设备的权限；uinput 只在另行启用的修复/实验场景申请，不作为普通输入通路。
+限制:Windows 涉及完整性级别和安全桌面的行为必须分场景验证,远程控制管理权限窗口时按需提权;不承诺拦截 `Ctrl+Alt+Del`、`Win+L`。Linux 正常转发只需要选定 evdev 设备的权限；uinput 只用于默认关闭的侧键保护（安装时 udev 规则把 `/dev/uinput` 交给 espkvm 组，并通过 modules-load.d 加载 uinput）。
 
 - Windows 钩子必须同步决定吞放,不能先交给异步 dispatcher 再决定。钩子线程维护最小路由/热键状态,按事件序号与 dispatcher 衔接,回调只非阻塞入队。键盘和按钮以钩子为唯一来源,Raw Input 只取相对位移及滚轮,避免双计数;验证低级钩子吞键后 Raw Input 的实际可用性。回注带自定义标记并排除,避免递归;退出、会话锁定或切换桌面时撤销 ClipCursor 并回 LOCAL。
 - Linux 按 SYN_REPORT 处理批次,EV_KEY value=2 不重复改变状态;监听热插拔、排除本程序 uinput 设备、处理 SYN_DROPPED 并通过 EVIOCG* 重建状态。回注设备声明所需能力及 SYN_REPORT。多个物理设备同按一个键时使用每设备状态与引用计数,拔出设备释放其贡献。
 - Linux REMOTE 期间的热插拔与丢事件不离开 REMOTE、不断开会话:新设备在按键全释放的批次边界补抓(插入时有键按住则等其释放);拔出设备只释放它的按键贡献;SYN_DROPPED 丢弃到下一个 SYN_REPORT 后用 EVIOCGKEY 重建,重建出的按下键进入抑制集合。
 - Linux 设备已被其他程序独占(EVIOCGRAB 返回 EBUSY,如 keyd、input-remapper、虚拟机直通)时,我们和桌面都收不到它的事件:该设备被跳过并在切换状态中警告,其余设备照常切换;它的按键状态不阻塞进入或退出 REMOTE。其他抓取错误仍整体回滚。这与 Windows 上 mstsc 等程序的低级钩子先于本程序吞键属于同类问题,Linux 在 evdev 层捕获,不受 X11/Wayland 应用级键盘抓取(远程桌面、虚拟机窗口)影响,唯一的同类来源就是 evdev 独占。
 - udev 规则覆盖 ID_INPUT_KEYBOARD、ID_INPUT_MOUSE 和 ID_INPUT_KEY,避免键盘的多媒体/NKRO 副接口不可读而在 REMOTE 时留在本机。
-- Linux LOCAL 不抓取、不回注。正常进入远程须物理全释放，在批次边界抓取并重读状态；任一失败撤销所有抓取。故障立即解除抓取。LOCAL 已到桌面的输入不能用另一个 uinput 设备撤销；LOCAL 可能看到整个热键组合。
+- Linux LOCAL 默认不抓取、不回注。可选侧键保护（Web UI 开关，配置 `linux_mouse_guard`，默认关闭）开启后，LOCAL 在全释放的批次边界抓取带 BTN_SIDE/BTN_EXTRA 的相对坐标鼠标，丢弃抓取前已到桌面的排队事件并重读状态，再为每只鼠标建一个照抄其按键、REL 能力和 id 的 “EspKVM <原名>” uinput 设备，原样回注 EV_KEY/EV_REL/SYN_REPORT，只扣下 Ctrl+侧键的按下与松开。Ctrl 状态取自各设备原始按键位，在读取时判定，与 REMOTE 共用。进入 REMOTE 时沿用已有抓取；回 LOCAL 或故障时先让虚拟设备松开它持有的键再解除抓取，随后读取循环重新抓取。uinput 不可用（权限、模块）时开关显示警告且不重试；虚拟鼠标写入失败时只放弃该鼠标。代价：本机鼠标输入经过本程序；按设备名生效的桌面鼠标设置需对虚拟鼠标重新设置；与 input-remapper 等独占工具冲突（被独占的鼠标跳过并警告）。
+- Linux 正常进入远程须物理全释放，在批次边界抓取并重读状态；任一失败撤销所有抓取。故障立即解除抓取。LOCAL 已到桌面的输入不能用另一个 uinput 设备撤销；LOCAL 可能看到整个热键组合。
 - 正常回 LOCAL 先确认远程释放，优先等物理键/按钮全释放的批次边界再解除抓取，dispatcher 仍处理输入。故障、取消或退出立即解除，不为等待物理释放延误本机恢复。恢复时可能出现物理保持键的后续原生事件，抑制集合不承诺过滤 Linux LOCAL 的桌面输入。
 
 ### 7.2 发送策略
@@ -307,7 +308,7 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 | 物理状态组合 | Windows LL 钩子 / Linux evdev | 当前配置的 Usage 集合,按 8.1 节语义 | 正向 |
 | Raw Input 识别 | Windows,仅默认热键 | 任一侧 Ctrl + 任一侧 Alt + W 组合形成的边沿 | 正向 |
 | RegisterHotKey | Windows,仅默认热键 | 系统 `MOD_CONTROL|MOD_ALT|MOD_NOREPEAT` + W,钩子收不到事件(如焦点在提权窗口)时兜底 | 正向 |
-| 鼠标组合 | Windows | 按住任一侧 Ctrl 时按下 XButton1 / XButton2;侧键本身被吞掉,不转发 | XButton1 正向,XButton2 反向 |
+| 鼠标组合 | Windows LL 钩子 / Linux evdev | 按住任一侧 Ctrl 时按下 XButton1 / XButton2(Linux 为 BTN_SIDE / BTN_EXTRA);侧键本身不转发给目标。Linux LOCAL 默认未独占设备,本机桌面仍会收到该侧键;开启侧键保护后不会 | XButton2(前进键)正向,XButton1(后退键)反向 |
 
 后三个来源 200 ms 内只触发一次,与钩子路径共同去重;录入热键期间都不触发。热键改为非默认组合时注销 RegisterHotKey 并停用 Raw Input 识别。部分鼠标驱动以 `VK_BROWSER_BACK/FORWARD` 报告侧键,钩子把这两个虚拟键视为 XButton1/XButton2。
 
@@ -319,7 +320,7 @@ ReleaseAll/Released 的 id 非零，ReleaseAll.id 从 1 严格递增，禁止回
 
 ### 8.2 目标与轮换
 
-目标为 `LOCAL, DEV0, DEV1, ...`,按设备列表顺序循环,仅包含已启用、已认证且 USB 已挂载的设备;USB 主机睡眠中(状态 `usb_suspended`)仍算已挂载。重排按稳定设备 id 保持目标。Web UI 可直接选择目标,与热键共用以下流程;反向轮换只由 Windows 的 Ctrl+XButton2 提供,不提供直接跳转热键。
+目标为 `LOCAL, DEV0, DEV1, ...`,按设备列表顺序循环,仅包含已启用、已认证且 USB 已挂载的设备;USB 主机睡眠中(状态 `usb_suspended`)仍算已挂载。重排按稳定设备 id 保持目标。Web UI 可直接选择目标,与热键共用以下流程;反向轮换只由 Windows / Linux 的 Ctrl+XButton1(后退键)提供,不提供直接跳转热键。
 
 活动设备断线、USB 卸载、删除或禁用时立即回 LOCAL;自动重连成功后仍保持 LOCAL。非活动设备只收发心跳、状态和配置,不接收输入。
 

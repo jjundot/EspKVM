@@ -17,4 +17,5 @@ void keep_awake_init(keep_awake *s, keep_awake_config config, uint64_t now, uint
 void keep_awake_user(keep_awake *s, uint64_t now, uint32_t random);
 void keep_awake_host(keep_awake *s, uint64_t now, uint32_t idle_s, bool known);
 unsigned keep_awake_state(const keep_awake *s, uint64_t now);
-bool keep_awake_poll(keep_awake *s, uint64_t now, uint32_t random);
+bool keep_awake_poll(keep_awake *s, uint64_t now);
+void keep_awake_moved(keep_awake *s, uint64_t now, uint32_t random);

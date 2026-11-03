@@ -506,8 +506,8 @@ func mouseCallback(code int32, wparam, lparam uintptr) uintptr {
 				s.Local()
 			}
 			if chord && down && s.sink != nil {
-				direction := uint16(0) // XBUTTON1 cycles forward; XBUTTON2 cycles backward.
-				if button == 4 {
+				direction := uint16(0) // XBUTTON2 (forward) cycles forward; XBUTTON1 (back) cycles backward.
+				if button == 3 {
 					direction = 1
 				}
 				if !s.sink(input.Event{Kind: input.Shortcut, Code: direction, Device: "windows-mouse-hotkey", Captured: time.Now()}) {

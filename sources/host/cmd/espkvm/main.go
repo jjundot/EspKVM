@@ -121,6 +121,9 @@ func run() error {
 	if e = source.SetHotkey(data.Hotkey); e != nil {
 		return e
 	}
+	if guard, ok := source.(control.MouseGuard); ok {
+		guard.SetMouseGuard(data.MouseGuard)
+	}
 	dispatcher := switcher.New(source)
 	go dispatcher.Run(ctx)
 	manager, e := devices.New(ctx, store, dispatcher)

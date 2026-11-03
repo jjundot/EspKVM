@@ -32,6 +32,13 @@ type App struct {
 	inputStatus atomic.Value
 }
 
+// MouseGuard is the Linux capture option that keeps Ctrl+side button off the
+// local desktop by passing mice through uinput.
+type MouseGuard interface {
+	SetMouseGuard(bool)
+	MouseGuardWarning() string
+}
+
 func (a *App) InputStatus(value string) { a.inputStatus.Store(value) }
 func (a *App) State() web.State {
 	state := web.State{Devices: a.Devices.Views(), Switch: a.Dispatcher.View(), Version: a.Version}
@@ -44,6 +51,9 @@ func (a *App) State() web.State {
 		return state
 	}
 	state.Hotkey = data.Hotkey
+	if guard, ok := a.Capture.(MouseGuard); ok {
+		state.MouseGuard = &web.MouseGuardView{Enabled: data.MouseGuard, Warning: guard.MouseGuardWarning()}
+	}
 	for _, p := range data.Pending {
 		state.Pending = append(state.Pending, web.PendingView{ID: p.New.ID, Name: p.New.Name, IP: p.New.IP, Port: p.New.Port, State: p.State})
 	}
@@ -166,6 +176,22 @@ func (a *App) Operation(ctx context.Context, name string, body json.RawMessage) 
 			return nil, e
 		}
 		return nil, a.Dispatcher.Recording(false)
+	case "mouse-guard":
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if e := web.Decode(body, &req); e != nil {
+			return nil, e
+		}
+		guard, ok := a.Capture.(MouseGuard)
+		if !ok {
+			return nil, errors.New("mouse guard is only available on Linux")
+		}
+		if e := a.Store.Update(func(data *config.Data) error { data.MouseGuard = req.Enabled; return nil }); e != nil {
+			return nil, e
+		}
+		guard.SetMouseGuard(req.Enabled)
+		return nil, nil
 	case "serial-ports":
 		return serialcfg.Ports()
 	case "serial-info", "serial-set":

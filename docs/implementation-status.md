@@ -14,7 +14,7 @@
 - 配置：凭据锁内合并、脱敏字段缺省、NVS 双槽和 v1 blob 迁移；当前台架构建未配对默认 VID/PID 为 0x046D/0xC52B。串口请求、RX 及解析器已消费区清零。
 - Go 客户端：输入状态/引用计数、物理键码映射、热键重武装、异步切换屏障、抑制集合、鼠标合并和分段、多设备独立重连及显式接管。切换中选择 LOCAL 为取消，不关闭会话。
 - Linux 捕获：REMOTE 期间热插拔（含蓝牙重连）在全释放边界补抓，拔出只释放该设备按键，SYN_DROPPED 用 EVIOCGKEY 重建，三者都不再断开会话；被其他程序独占（EBUSY）的设备跳过并在切换状态中警告；udev 规则加入 ID_INPUT_KEY。
-- 热键：配置的 Usage 组合；Windows 另有默认热键的 Raw Input / RegisterHotKey 兜底及 Ctrl+XButton1/2 正反向轮换，见设计第 8 节。
+- 热键：配置的 Usage 组合；Windows 另有默认热键的 Raw Input / RegisterHotKey 兜底及 Ctrl+XButton1/2 正反向轮换；Linux 同样支持 Ctrl+BTN_SIDE/BTN_EXTRA 轮换，可选侧键保护（LOCAL 独占鼠标并经 uinput 回注）避免该侧键到达本机桌面，见设计第 7、8 节。尚未在真实 Linux 桌面验证。
 - 平台输入适配器：Windows LL hooks/Raw Input、标记回注、ClipCursor、桌面/会话切换回退；Linux LOCAL 被动读、SYN_REPORT 批次、全释放边界抓取/复查/确认、SYN_DROPPED、设备移除及轮询热插拔。Linux 正常返回 LOCAL 等待释放边界，故障及退出立即解除抓取。
 - 常驻 espkvm 及本地 API：密码登录（默认 admin，配置中存 `md5("espkvm_"+密码)`，旧 PBKDF2 记录登录时迁移）、会话绑定密码摘要（任何进程改密后旧会话失效）、HttpOnly/SameSite cookie、CSRF、Host/Origin；启动凭据仅在默认密码时可用；敏感读取和 fetch SSE 同样要求 CSRF 请求头，SSE 客户端/事件大小上限、脱敏状态；设备管理、排序、热键、串口/TCP 配置和 pending 操作已接线。
 - 客户端文件跨进程锁、原子替换与原有权限保护；事务 token 防止旧回调删除新 pending。拒绝码 1/3 自动清理，未知结果及存储失败保留候选。

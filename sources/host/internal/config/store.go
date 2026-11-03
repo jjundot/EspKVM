@@ -39,6 +39,7 @@ type Pending struct {
 type Data struct {
 	Devices         []Device  `json:"devices"`
 	Hotkey          []uint16  `json:"hotkey"`
+	MouseGuard      bool      `json:"linux_mouse_guard,omitempty"` // Linux LOCAL uinput pass-through.
 	Pending         []Pending `json:"pending"`
 	WebPasswordMD5  string    `json:"web_password_md5,omitempty"`
 	WebPasswordSalt string    `json:"web_password_salt,omitempty"` // Legacy; migrated on login.

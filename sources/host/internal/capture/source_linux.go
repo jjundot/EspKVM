@@ -31,6 +31,16 @@ type linuxDevice struct {
 	// neither we nor the desktop receive its events. grabLater: it appeared in
 	// REMOTE with keys held and is grabbed at its next all-released boundary.
 	foreign, grabLater bool
+	// Mouse guard: guardable mice (relative axes and a side button) can be
+	// grabbed in LOCAL and re-injected through virtual, a uinput fd (0: none;
+	// fd 0 is always stdin). vkeys is what virtual holds, out its queued events.
+	guardable, guarded bool
+	supported          [96]byte
+	rel                [2]byte
+	id                 [8]byte
+	virtual            int
+	vkeys              [96]byte
+	out                []byte
 }
 type linuxSource struct {
 	boundaryEvents       []input.Event
@@ -41,6 +51,11 @@ type linuxSource struct {
 	epoch                uint64
 	warning              string
 	route                routing
+	// chordButtons: side buttons pressed with Ctrl (bit 0 BTN_SIDE, bit 1 BTN_EXTRA).
+	chordButtons uint8
+	guard        bool
+	guardFailed  bool
+	guardWarning string
 }
 
 func New() Source                                    { return &linuxSource{devices: map[string]*linuxDevice{}} }
@@ -130,7 +145,9 @@ func anyKey(keys [96]byte) bool {
 }
 func (s *linuxSource) localLocked() {
 	for _, d := range s.devices {
-		if d.grabbed {
+		if d.guarded {
+			s.unguard(d) // The reader grabs it again for LOCAL pass-through.
+		} else if d.grabbed {
 			grabDevice(d, false)
 			d.grabbed = false
 		}
@@ -147,6 +164,9 @@ func (s *linuxSource) localLocked() {
 // delivers nothing to us or to the desktop, so it is skipped and reported: one
 // exclusive holder must not stop the other keyboards and mice from switching.
 func (s *linuxSource) grabOne(d *linuxDevice) error {
+	if d.grabbed {
+		return nil // Already held for LOCAL pass-through; a second EVIOCGRAB is EBUSY.
+	}
 	if e := grabDevice(d, true); e != nil {
 		if errors.Is(e, unix.EBUSY) {
 			d.foreign = true
@@ -203,11 +223,13 @@ func (s *linuxSource) grabPending() {
 	s.updateWarning()
 }
 func (s *linuxSource) remove(d *linuxDevice) input.Event {
+	s.releaseVirtual(d)
 	unix.Close(d.fd) // Closing also ends our grab.
 	delete(s.devices, d.path)
 	s.updateWarning()
 	return input.Event{Device: d.path, Kind: input.Removed}
 }
+
 func (s *linuxSource) Local()                          { s.mu.Lock(); s.localLocked(); s.mu.Unlock(); s.route.local() }
 func (s *linuxSource) ReleaseLocal(*input.State) error { return nil }
 
@@ -407,7 +429,11 @@ func (s *linuxSource) scan() ([]input.Event, error) {
 			unix.Close(fd)
 			continue
 		}
-		d := &linuxDevice{fd: fd, path: path, name: strings.TrimRight(string(name[:]), "\x00"), boundary: true}
+		d := &linuxDevice{fd: fd, path: path, name: strings.TrimRight(string(name[:]), "\x00"), boundary: true, supported: keysSupported}
+		if capability[0]&4 != 0 && (keyBit(&keysSupported, btnSide) || keyBit(&keysSupported, btnExtra)) {
+			d.guardable = ioctlBuffer(fd, uintptr(2<<30|len(d.rel)<<16|int('E')<<8|0x22), unsafe.Pointer(&d.rel[0])) == nil &&
+				ioctlBuffer(fd, uintptr(2<<30|len(d.id)<<16|int('E')<<8|0x02), unsafe.Pointer(&d.id[0])) == nil
+		}
 		keys, e := readKeys(d)
 		if e != nil {
 			unix.Close(fd)
@@ -420,12 +446,104 @@ func (s *linuxSource) scan() ([]input.Event, error) {
 	}
 	return events, nil
 }
+
+// handleRaw applies one evdev event and returns the batch it completes. A
+// guarded device in LOCAL also queues the event for its virtual device.
+func (s *linuxSource) handleRaw(d *linuxDevice, kind, code uint16, value int32) ([]input.Event, error) {
+	passThrough := d.guarded && !s.remote
+	d.boundary = kind == 0 && code == 0
+	if kind == 0 && code == 3 {
+		// Rebuild from EVIOCGKEY at the next SYN_REPORT (design 7.1); losing
+		// buffered events is no reason to leave REMOTE or drop the session.
+		d.dropped = true
+		d.pending = nil
+		d.keys = d.delivered
+		return nil, nil
+	}
+	if kind == 0 && code == 0 && d.dropped {
+		keys, e := queryKeys(d)
+		if e != nil {
+			return nil, e
+		}
+		events := syncDevice(d, keys, true)
+		d.dropped = false
+		d.delivered = d.keys
+		if passThrough {
+			s.alignVirtual(d, s.passThrough(d))
+		}
+		return events, nil
+	}
+	if kind == 0 && code == 0 {
+		events := d.pending
+		d.pending = nil
+		d.delivered = d.keys
+		if passThrough {
+			d.forward(0, 0, 0)
+		}
+		return events, nil
+	}
+	if d.dropped {
+		return nil, nil
+	}
+	chord := false
+	if kind == 1 && code < 768 && value != 2 {
+		keys := d.keys
+		if value != 0 {
+			keys[code/8] |= 1 << (code % 8)
+		} else {
+			keys[code/8] &^= 1 << (code % 8)
+		}
+		changed := syncDevice(d, keys, false)
+		if code == btnSide || code == btnExtra {
+			chord = s.chord(code, value != 0)
+		}
+		if chord {
+			for i := range changed {
+				changed[i].Suppressed = true
+			}
+		}
+		d.pending = append(d.pending, changed...)
+		// BTN_EXTRA (forward) cycles forward and BTN_SIDE (back) backward, as on Windows.
+		if chord && value != 0 && !s.route.recordingActive() {
+			d.pending = append(d.pending, input.Event{Kind: input.Shortcut, Code: btnExtra - code, Device: "linux-mouse-hotkey"})
+		}
+	}
+	if passThrough && !chord && (kind == 1 || kind == 2) {
+		d.forward(kind, code, value)
+	}
+	if kind == 2 {
+		event := input.Event{Device: d.path, Kind: input.Motion}
+		switch code {
+		case 0:
+			event.DX = value
+		case 1:
+			event.DY = value
+		case 8:
+			event.Wheel = value
+		case 6:
+			event.Pan = value
+		default:
+			return nil, nil
+		}
+		d.pending = append(d.pending, event)
+	}
+	if len(d.pending) > 128 {
+		return nil, errors.New("evdev batch exceeded 128 events; input resynchronization required")
+	}
+	for i := range d.pending {
+		if d.pending[i].Captured.IsZero() {
+			d.pending[i].Captured = time.Now()
+		}
+	}
+	return nil, nil
+}
 func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) error {
 	s.route.resetPhysical()
 	defer func() {
 		s.Local()
 		s.mu.Lock()
 		for _, d := range s.devices {
+			s.releaseVirtual(d)
 			unix.Close(d.fd)
 		}
 		s.devices = map[string]*linuxDevice{}
@@ -493,70 +611,14 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 			}
 			for j := 0; j < n; j += 24 {
 				kind, code, value := binary.LittleEndian.Uint16(raw[j+16:]), binary.LittleEndian.Uint16(raw[j+18:]), int32(binary.LittleEndian.Uint32(raw[j+20:]))
-				d.boundary = kind == 0 && code == 0
-				if kind == 0 && code == 3 {
-					// Rebuild from EVIOCGKEY at the next SYN_REPORT (design 7.1); losing
-					// buffered events is no reason to leave REMOTE or drop the session.
-					d.dropped = true
-					d.pending = nil
-					d.keys = d.delivered
-					continue
-				}
-				if kind == 0 && code == 0 && d.dropped {
-					keys, e := readKeys(d)
-					if e != nil {
-						s.mu.Unlock()
-						return e
-					}
-					events = append(events, syncDevice(d, keys, true)...)
-					d.dropped = false
-					d.delivered = d.keys
-					continue
-				}
-				if kind == 0 && code == 0 {
-					events = append(events, d.pending...)
-					d.pending = nil
-					d.delivered = d.keys
-					continue
-				}
-				if d.dropped {
-					continue
-				}
-				if kind == 1 && code < 768 && value != 2 {
-					keys := d.keys
-					if value != 0 {
-						keys[code/8] |= 1 << (code % 8)
-					} else {
-						keys[code/8] &^= 1 << (code % 8)
-					}
-					d.pending = append(d.pending, syncDevice(d, keys, false)...)
-				}
-				if kind == 2 {
-					event := input.Event{Device: d.path, Kind: input.Motion}
-					switch code {
-					case 0:
-						event.DX = value
-					case 1:
-						event.DY = value
-					case 8:
-						event.Wheel = value
-					case 6:
-						event.Pan = value
-					default:
-						continue
-					}
-					d.pending = append(d.pending, event)
-				}
-				if len(d.pending) > 128 {
+				batch, e := s.handleRaw(d, kind, code, value)
+				if e != nil {
 					s.mu.Unlock()
-					return errors.New("evdev batch exceeded 128 events; input resynchronization required")
+					return e
 				}
-				for i := range d.pending {
-					if d.pending[i].Captured.IsZero() {
-						d.pending[i].Captured = time.Now()
-					}
-				}
+				events = append(events, batch...)
 			}
+			s.flushVirtual(d)
 		}
 		captured := time.Now()
 		for i := range events {
@@ -567,12 +629,15 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 		s.mu.Unlock()
 		// No source mutex is held when a queue overflow calls Local synchronously.
 		for _, e := range events {
-			s.route.observe(e)
+			if e.Kind != input.Shortcut {
+				s.route.observe(e)
+			}
 			sink(e)
 		}
 		s.mu.Lock()
 		s.grabPending()
 		acquired, grabError := s.tryGrab()
+		guarded := s.guardPending()
 		epoch := s.epoch
 		updates := s.boundaryEvents
 		s.boundaryEvents = nil
@@ -580,6 +645,11 @@ func (s *linuxSource) Run(ctx context.Context, sink func(input.Event) bool) erro
 		if grabError != nil {
 			s.Local()
 			return grabError
+		}
+		for _, e := range guarded {
+			e.Captured = time.Now()
+			s.route.observe(e)
+			sink(e)
 		}
 		if acquired {
 			for _, e := range updates {

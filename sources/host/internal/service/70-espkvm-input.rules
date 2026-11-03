@@ -1,6 +1,8 @@
-# Dedicated opt-in group; no world-writable input nodes or global uinput access.
+# Dedicated opt-in group; no world-writable input or uinput nodes.
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", GROUP="espkvm", MODE="0660"
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", GROUP="espkvm", MODE="0660"
 # Media-key and secondary NKRO interfaces of keyboards are often tagged only ID_INPUT_KEY;
 # without them those keys stay on the local desktop while REMOTE.
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEY}=="1", GROUP="espkvm", MODE="0660"
+# The optional mouse guard re-injects LOCAL mouse input through uinput.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="espkvm", MODE="0660", OPTIONS+="static_node=uinput"

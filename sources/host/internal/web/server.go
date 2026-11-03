@@ -36,6 +36,12 @@ type State struct {
 	Switch  switcher.View  `json:"switch"`
 	Pending []PendingView  `json:"pending"`
 	Hotkey  []uint16       `json:"hotkey"`
+	// MouseGuard is nil where the platform has no such option (only Linux has).
+	MouseGuard *MouseGuardView `json:"mouse_guard,omitempty"`
+}
+type MouseGuardView struct {
+	Enabled bool   `json:"enabled"`
+	Warning string `json:"warning,omitempty"`
 }
 type Operation func(context.Context, string, json.RawMessage) (any, error)
 
@@ -111,7 +117,7 @@ func (s *Server) Handler() http.Handler {
 	}))
 	mux.HandleFunc("GET /api/state", s.authorized(func(w http.ResponseWriter, r *http.Request, a authorization) { writeJSON(w, s.state()) }))
 	mux.HandleFunc("GET /api/events", s.authorized(s.events))
-	for _, op := range []string{"target", "recording", "device-save", "device-delete", "device-order", "takeover", "hotkey", "pending-discard", "pending-verify", "serial-ports", "serial-info", "serial-set", "device-config-get", "device-config-set"} {
+	for _, op := range []string{"target", "recording", "device-save", "device-delete", "device-order", "takeover", "hotkey", "mouse-guard", "pending-discard", "pending-verify", "serial-ports", "serial-info", "serial-set", "device-config-get", "device-config-set"} {
 		op := op
 		mux.HandleFunc("POST /api/"+op, s.authorized(func(w http.ResponseWriter, r *http.Request, a authorization) {
 			if !s.writeAllowed(r) || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(a.csrf)) != 1 {

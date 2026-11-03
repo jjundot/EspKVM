@@ -17,7 +17,9 @@ const (
 	unitName  = "espkvm.service"
 	unitPath  = "/etc/systemd/system/" + unitName
 	rulesPath = "/etc/udev/rules.d/70-espkvm-input.rules"
-	group     = "espkvm"
+	// uinput is often a module; the optional mouse guard needs it at boot.
+	modulesPath = "/etc/modules-load.d/espkvm.conf"
+	group       = "espkvm"
 )
 
 //go:embed 70-espkvm-input.rules
@@ -46,7 +48,10 @@ func reloadRules() error {
 	if e := run("udevadm", "control", "--reload-rules"); e != nil {
 		return e
 	}
-	return run("udevadm", "trigger", "--subsystem-match=input", "--action=change")
+	if e := run("udevadm", "trigger", "--subsystem-match=input", "--action=change"); e != nil {
+		return e
+	}
+	return run("udevadm", "trigger", "--subsystem-match=misc", "--sysname-match=uinput", "--action=change")
 }
 
 func install() error {
@@ -96,6 +101,12 @@ func install() error {
 	if e = os.WriteFile(rulesPath, rules, 0644); e != nil {
 		return e
 	}
+	if e = os.WriteFile(modulesPath, []byte("uinput\n"), 0644); e != nil {
+		return e
+	}
+	if e = run("modprobe", "uinput"); e != nil {
+		fmt.Println("warning:", e, "(the optional mouse guard needs uinput)")
+	}
 	if e = reloadRules(); e != nil {
 		return e
 	}
@@ -125,7 +136,7 @@ func uninstall() error {
 	if e := run("systemctl", "disable", "--now", unitName); e != nil {
 		return e
 	}
-	for _, p := range []string{unitPath, rulesPath} {
+	for _, p := range []string{unitPath, rulesPath, modulesPath} {
 		if e := os.Remove(p); e != nil && !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
@@ -136,7 +147,7 @@ func uninstall() error {
 	if e := reloadRules(); e != nil {
 		return e
 	}
-	fmt.Printf("Removed %s and the input udev rule; the %s group is kept.\n", unitName, group)
+	fmt.Printf("Removed %s, the input udev rule and the uinput module entry; the %s group is kept.\n", unitName, group)
 	return nil
 }
 

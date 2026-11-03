@@ -3,7 +3,9 @@
 package capture
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -198,5 +200,136 @@ func TestHotplugAndRemovalKeepRemote(t *testing.T) {
 	}
 	if e := s.remove(s.devices["a"]); e.Kind != input.Removed || !s.remote || s.devices["a"] != nil {
 		t.Fatal("removal left REMOTE", e)
+	}
+}
+
+// feed runs one evdev event plus SYN_REPORT through the reader logic.
+func feed(t *testing.T, s *linuxSource, d *linuxDevice, kind, code uint16, value int32) []input.Event {
+	t.Helper()
+	first, e := s.handleRaw(d, kind, code, value)
+	if e != nil {
+		t.Fatal(e)
+	}
+	batch, e := s.handleRaw(d, 0, 0, 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return append(first, batch...)
+}
+func shortcuts(events []input.Event) []uint16 {
+	var codes []uint16
+	for _, e := range events {
+		if e.Kind == input.Shortcut {
+			codes = append(codes, e.Code)
+		}
+	}
+	return codes
+}
+func TestControlSideButtonCyclesAndIsSuppressed(t *testing.T) {
+	kbd, mouse := &linuxDevice{path: "kbd", boundary: true}, &linuxDevice{path: "mouse", boundary: true}
+	s := &linuxSource{devices: map[string]*linuxDevice{"kbd": kbd, "mouse": mouse}}
+	plain := feed(t, s, mouse, 1, btnSide, 1)
+	if len(shortcuts(plain)) != 0 || plain[0].Suppressed {
+		t.Fatal("side button without Ctrl switched", plain)
+	}
+	feed(t, s, mouse, 1, btnSide, 0)
+	feed(t, s, kbd, 1, keyRightCtrl, 1)
+	for code, direction := range map[uint16]uint16{btnSide: 1, btnExtra: 0} {
+		down := feed(t, s, mouse, 1, code, 1)
+		if got := shortcuts(down); len(got) != 1 || got[0] != direction || !down[0].Suppressed {
+			t.Fatal("Ctrl+side button did not cycle", code, down)
+		}
+		feed(t, s, kbd, 1, keyRightCtrl, 0) // Releasing Ctrl first must not leak the button release.
+		up := feed(t, s, mouse, 1, code, 0)
+		if len(shortcuts(up)) != 0 || !up[0].Suppressed {
+			t.Fatal("chord release leaked or cycled", code, up)
+		}
+		feed(t, s, kbd, 1, keyRightCtrl, 1)
+	}
+	s.route.setRecording(true)
+	if down := feed(t, s, mouse, 1, btnExtra, 1); len(shortcuts(down)) != 0 || !down[0].Suppressed {
+		t.Fatal("chord cycled while recording", down)
+	}
+}
+
+// mockVirtual records what the guard writes to uinput.
+func mockVirtual(t *testing.T) (*[][3]int32, *int) {
+	t.Helper()
+	oldOpen, oldWrite, oldClose := openVirtual, writeVirtual, closeVirtual
+	t.Cleanup(func() { openVirtual, writeVirtual, closeVirtual = oldOpen, oldWrite, oldClose })
+	written, closed := new([][3]int32), new(int)
+	openVirtual = func(*linuxDevice) (int, error) { return 99, nil }
+	writeVirtual = func(fd int, b []byte) error {
+		for i := 0; i+24 <= len(b); i += 24 {
+			*written = append(*written, [3]int32{int32(binary.LittleEndian.Uint16(b[i+16:])), int32(binary.LittleEndian.Uint16(b[i+18:])), int32(binary.LittleEndian.Uint32(b[i+20:]))})
+		}
+		return nil
+	}
+	closeVirtual = func(int) { *closed++ }
+	return written, closed
+}
+func TestMouseGuardPassesThroughAllButChord(t *testing.T) {
+	s, released := mockDevices(t)
+	written, closed := mockVirtual(t)
+	kbd, mouse := s.devices["a"], s.devices["b"]
+	mouse.guardable = true
+	s.guard = true
+	s.guardPending()
+	if !mouse.grabbed || !mouse.guarded || mouse.virtual != 99 || kbd.grabbed {
+		t.Fatal("guardable mouse not taken for pass-through")
+	}
+	feed(t, s, mouse, 2, 0, 5)
+	feed(t, s, mouse, 1, 0x110, 1)
+	s.flushVirtual(mouse)
+	want := [][3]int32{{2, 0, 5}, {0, 0, 0}, {1, 0x110, 1}, {0, 0, 0}}
+	if fmt.Sprint(*written) != fmt.Sprint(want) {
+		t.Fatal("pass-through", *written)
+	}
+	*written = nil
+	feed(t, s, kbd, 1, keyLeftCtrl, 1)
+	feed(t, s, mouse, 1, btnExtra, 1)
+	feed(t, s, mouse, 1, btnExtra, 0)
+	s.flushVirtual(mouse)
+	for _, e := range *written {
+		if e[0] == 1 && e[1] == btnExtra {
+			t.Fatal("chord side button reached the desktop", *written)
+		}
+	}
+	*written = nil
+	s.localLocked() // Fault path: the left button held on the virtual device is released.
+	if mouse.grabbed || mouse.guarded || *released != 1 || fmt.Sprint(*written) != fmt.Sprint([][3]int32{{1, 0x110, 0}, {0, 0, 0}}) {
+		t.Fatal("local did not release the virtual device", *written, *released)
+	}
+	feed(t, s, mouse, 1, 0x110, 0)
+	feed(t, s, kbd, 1, keyLeftCtrl, 0)
+	s.guardPending()
+	if !mouse.guarded {
+		t.Fatal("pass-through not resumed after release")
+	}
+	s.SetMouseGuard(false)
+	if mouse.grabbed || mouse.guarded || mouse.virtual != 0 || *closed != 1 {
+		t.Fatal("disabling the guard kept the mouse")
+	}
+}
+func TestRemoteReusesGuardGrab(t *testing.T) {
+	s, _ := mockDevices(t)
+	mockVirtual(t)
+	mouse := s.devices["b"]
+	mouse.guardable = true
+	s.guard = true
+	s.guardPending()
+	grabDevice = func(d *linuxDevice, grab bool) error {
+		if grab && d.grabbed {
+			return unix.EBUSY
+		}
+		return nil
+	}
+	s.Remote()
+	if ready, e := s.tryGrab(); !ready || e != nil || mouse.foreign {
+		t.Fatal("REMOTE grab failed on a guarded mouse", ready, e)
+	}
+	feed(t, s, mouse, 2, 0, 5)
+	if len(mouse.out) != 0 {
+		t.Fatal("REMOTE input passed through to the desktop")
 	}
 }
