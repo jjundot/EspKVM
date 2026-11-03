@@ -240,6 +240,13 @@ func (s *windowsSource) Remote() (bool, error) {
 	if !neutral() {
 		return false, nil
 	}
+	// RDP can report modifier releases through Raw Input without delivering the
+	// corresponding low-level hook event. Once Windows confirms all physical
+	// inputs are up, reconcile both host-side state machines before capturing.
+	s.route.resetPhysical()
+	if s.sink != nil && !s.sink(input.Event{Device: "windows-hooks", Kind: input.Removed, Resync: true, Captured: time.Now()}) {
+		return false, errors.New("cannot reconcile physical input state before remote capture")
+	}
 	var p point
 	if ok, _, e := user32.NewProc("GetCursorPos").Call(uintptr(unsafe.Pointer(&p))); ok == 0 {
 		return false, e
