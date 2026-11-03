@@ -1,0 +1,7 @@
+.tool-row{align-items:flex-end}
+.tool-row label{margin:0;min-width:220px;flex:1}
+.tool-row select,.tool-row button{height:38px}
+.device-actions{flex-wrap:wrap}
+.serial-select{display:flex;align-items:flex-end;gap:8px}
+.serial-select label{flex:1;min-width:0;margin:0}
+.serial-select select,.serial-select button{height:38px}

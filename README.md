@@ -2,7 +2,7 @@
 
 ESP32-S3 USB 键鼠共享器，Windows/Linux Go 客户端。实施基线见 [设计决议](docs/esp32-kvm-decisions.md) 和 [目录约定](docs/source-layout.md)。
 
-VS Code 任务列表只有 **build**、**rebuild**（`Ctrl+Shift+B` 默认 build）。选择任务后，再在第二级选择 **Host** 或 **Device**。Device 当前构建 M1 HID 测试固件；Host 同时构建 Windows / Linux 的 amd64 客户端工具，分别输出到 `build/host/bin/windows/`、`build/host/bin/linux/`。任务内部自动配置并按需生成 proto，不再单独显示 configure 任务。
+VS Code 任务列表只有 **build**、**rebuild**（`Ctrl+Shift+B` 默认 build）。选择任务后，再在第二级选择 **Host** 或 **Device**。Device 当前构建 M1 HID 测试固件；Host 构建三种客户端：Windows x86_64、Linux x86_64、Linux aarch64，统一输出到 `build/host/bin/`。文件名包含平台和架构；CLI 配置命令已集成在客户端的 `ctl` 子命令中。测试程序统一输出到 `build/test/`。任务内部自动配置并按需生成 proto，不再单独显示 configure 任务。
 
 Windows 通过系统 `wsl.exe` 调用构建脚本，不要求安装 Windows CMake。D 盘工作副本会同步到 WSL ext4 的固定缓存目录进行增量编译，完成后把产物放回工作区 `build/host/bin` 或 `build/device/flash/hid-selftest`；rebuild 保留 HID 配置。WSL Remote 中也使用相同两项任务。脚本识别本次已安装的 IDF/Go/Python 环境，也支持通过 `IDF_PATH`、`IDF_TOOLS_PATH`、`IDF_PYTHON_ENV_PATH`、`PROTO_PYTHON` 指定工具链。下面的 CMake 命令仍可独立使用。
 
@@ -13,8 +13,10 @@ build/
 ├── host/
 │   ├── cmake/
 │   └── bin/
-│       ├── windows/             # .exe
-│       └── linux/               # ELF
+│       ├── espkvm_x86_64_windows.exe  # Windows 客户端（带图标）
+│       ├── espkvm_x86_64_linux.exe    # Linux x86_64 客户端
+│       └── espkvm_aarch64_linux.exe   # Linux ARM64 客户端
+├── test/                        # 协议/输入等测试程序
 ├── device/
 │   ├── cmake/
 │   ├── firmware/                # 正式固件 IDF 输出
@@ -27,9 +29,9 @@ build/
 └── tools/
 ```
 
-**当前为协议 v2 候选与集成验收阶段，尚未完成发布验收。** 正式固件已接入 WiFi/TCP/认证/GCM/HID；常驻客户端与安全 API 已实现，Web UI 前端仍待完成。详细范围见 [实施状态](docs/implementation-status.md) 和 [验收记录](docs/validation-2026-11-02.md)。未配对固件只启动 UART 配网。
+**当前为协议 v2 候选与集成验收阶段，尚未完成发布验收。** 正式固件已接入 WiFi/TCP/认证/GCM/HID；常驻客户端、安全 API 和嵌入式 Web UI 已实现，仍待桌面及硬件验收。详细范围见 [实施状态](docs/implementation-status.md) 和 [验收记录](docs/validation-2026-11-02.md)。未配对固件只启动 UART 配网。
 
-唯一设计基线为 [v11 决议](docs/esp32-kvm-decisions.md)。优先完成 [M1 USB 实验](experiments/usb-hid/README.md)、[Windows M0](experiments/windows-input/README.md) 和 [Linux M0](experiments/linux-input/README.md) 的真实硬件验收，再冻结协议。VID/PID 默认 0，必须提供合法标识。
+唯一设计基线为 [v11 决议](docs/esp32-kvm-decisions.md)。优先完成 [M1 USB 实验](experiments/usb-hid/README.md) 和 [Linux M0](experiments/linux-input/README.md) 的真实硬件验收，再冻结协议。VID/PID 默认 0，必须提供合法标识。
 
 ## WSL host 构建
 
@@ -60,18 +62,18 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 ## CLI
 
 ```sh
-build/host/bin/linux/espkvmctl ports
-build/host/bin/linux/espkvmctl -serial /dev/ttyUSB0 info
-build/host/bin/linux/espkvmctl -serial /dev/ttyUSB0 -id desk -config device.json serial-set
-build/host/bin/linux/espkvmctl pending-list
-build/host/bin/linux/espkvmctl -id desk pending-discard
-build/host/bin/linux/espkvmctl -id desk verify
-build/host/bin/linux/espkvmctl -address 192.168.1.10:24800 -psk-file secret.hex check
+build/host/bin/espkvm_x86_64_linux.exe ctl ports
+build/host/bin/espkvm_x86_64_linux.exe ctl -serial /dev/ttyUSB0 info
+build/host/bin/espkvm_x86_64_linux.exe ctl -serial /dev/ttyUSB0 -id desk -config device.json serial-set
+build/host/bin/espkvm_x86_64_linux.exe ctl pending-list
+build/host/bin/espkvm_x86_64_linux.exe ctl -id desk pending-discard
+build/host/bin/espkvm_x86_64_linux.exe ctl -id desk verify
+build/host/bin/espkvm_x86_64_linux.exe ctl -address 192.168.1.10:24800 -psk-file secret.hex check
 ```
 
 参数放在子命令前。完整配置 JSON 遵循 `sources/protocol/ek.proto` 的 protobuf JSON 映射；首次配置须同时提供 password（开放网络显式空字符串）及 base64 的 16B 随机 PSK；已配对时缺省两字段表示保留，显式空 PSK 拒绝。配置请求前会原子保存 pending 凭据；应答丢失保留 pending，不自动重发。`verify` 用新凭据认证并比对脱敏配置；TCP 服务已实现，仍需真实设备互通验收。
 
-默认凭据文件：Linux 用户配置目录下 `EspKVM/config.json`（文件 0600，目录 0700）；Windows `%APPDATA%/EspKVM/config.json`（当前用户和 SYSTEM 的 ACL）。日志不输出凭据。
+默认凭据文件：客户端可执行文件旁的 `config.json`。Windows 文件 ACL 限制为当前用户和 SYSTEM；Linux 文件权限为 0600。首次升级时会从旧用户配置目录复制现有配置到可执行文件旁，并保留旧文件作为备份。Web UI 首次登录密码为 `admin`，可在登录后修改；密码以 PBKDF2-SHA256 摘要和随机盐保存。Web UI 显示客户端版本，格式为 `shortsha_YYYYMMDDTHHMMSSZ`；设备固件使用相同格式，但由设备固件独立编译生成。日志不输出凭据。
 
 ## 固件（未配对时仅 UART）
 
@@ -98,4 +100,4 @@ cmake --build --preset device --target device
 
 设置 EK_PSA_SOURCE 为已锁定 ESP-IDF 的 components/mbedtls/mbedtls/tf-psa-crypto 目录，CMake test-protocol 会增加 nanopb/PSA 向量、NVS 模型、同源 C TCP 与 Go 的互通测试。Linux 可加 -DEK_SANITIZERS=ON 检查便携 C 核心。原始 Protobuf/GCM 向量用 node tools/generate_vectors.cjs 生成；测试不连接真实设备。
 
-Linux 构建后，可审阅并执行 sudo bash packaging/linux/install.sh USER，安装两个二进制及仅对专用 espkvm 组开放输入设备的 udev 规则；重新登录后生效。卸载用 sudo bash packaging/linux/uninstall.sh，不删除用户凭据。不默认安装常驻系统服务，客户端在用户桌面会话运行。
+Linux 构建后，可审阅并执行 sudo bash packaging/linux/install.sh USER，客户端安装到该用户的 `~/.local/bin/espkvm`，使其能在可执行文件旁创建配置文件；同时安装仅对专用 espkvm 组开放输入设备的 udev 规则，重新登录后生效。卸载用 sudo bash packaging/linux/uninstall.sh USER，不删除用户凭据。不默认安装常驻系统服务，客户端在用户桌面会话运行。

@@ -128,7 +128,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	var recordUntil time.Time
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
-	hotkey, _ := input.NewHotkey([]uint16{0xe0, 0xe4})
+	hotkey, _ := input.NewHotkey(input.DefaultHotkey())
 	suppressed := map[uint32]bool{}
 	view := View{Target: Local, Phase: "idle"}
 	desired, queued := "", ""

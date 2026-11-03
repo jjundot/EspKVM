@@ -6,6 +6,8 @@ target=${2:-device}
 [[ "$action" == build || "$action" == rebuild ]] || exit 2
 [[ "$target" == host || "$target" == device ]] || exit 2
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+git_sha1=$(git -C "$root" rev-parse HEAD)
+export EK_GIT_SHA1="$git_sha1"
 source "$root/tools/versions.env"
 work=$root
 case "$root" in
@@ -86,10 +88,10 @@ PY
  export PATH="$IDF_PYTHON_ENV_PATH/bin:$IDF_PATH/tools:$PATH"
  export ESP_IDF_VERSION=$IDF_VERSION
  cd "$work"
- cmake --preset device -DPython3_EXECUTABLE="$proto_python"
+ cmake --preset device -DPython3_EXECUTABLE="$proto_python" -DEK_GIT_SHA1="$git_sha1"
  if [[ "$action" == rebuild ]]; then
-  cmake --build --preset device --target rebuild-hid-selftest
- else cmake --build --preset device; fi
+  cmake --build --preset device --target device rebuild-hid-selftest
+ else cmake --build --preset device --target device hid-selftest; fi
  package=$("$proto_python" tools/package_device.py build/device/hid-selftest build/device/flash/hid-selftest --auto)
  if [[ "$root" != "$work" ]]; then
   mkdir -p "$root/build/device/flash/hid-selftest/${package##*/}" "$root/build/device/config"
@@ -99,13 +101,14 @@ PY
  printf 'Flash package: %s/build/device/flash/hid-selftest/%s\n' "$root" "${package##*/}"
 else
  cd "$work"
- cmake --preset host -DPython3_EXECUTABLE="$proto_python"
+ cmake --preset host -DPython3_EXECUTABLE="$proto_python" -DEK_GIT_SHA1="$git_sha1"
  build_args=(--build --preset host --target host)
  if [[ "$action" == rebuild ]]; then build_args+=(--clean-first); fi
  cmake "${build_args[@]}"
  if [[ "$root" != "$work" ]]; then
   mkdir -p "$root/build/host/bin"
-  rsync -a build/host/bin/ "$root/build/host/bin/"
+  [[ $(realpath "$root/build/host/bin") == "$root/build/host/bin" ]] || { echo 'Refusing to sync outside build/host/bin.' >&2; exit 1; }
+  rsync -a --delete build/host/bin/ "$root/build/host/bin/"
  fi
  printf 'Host binaries: %s/build/host/bin\n' "$root"
 fi

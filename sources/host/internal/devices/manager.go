@@ -20,21 +20,22 @@ import (
 )
 
 type View struct {
-	Firmware  uint32      `json:"firmware"`
-	MAC       string      `json:"mac"`
-	Uptime    uint32      `json:"uptime_s"`
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	IP        string      `json:"ip"`
-	Port      uint16      `json:"port"`
-	Enabled   bool        `json:"enabled"`
-	Connected bool        `json:"connected"`
-	USB       bool        `json:"usb"`
-	RSSI      int32       `json:"rssi"`
-	LEDs      uint32      `json:"leds"`
-	LastValid time.Time   `json:"last_valid,omitempty"`
-	RTT       session.RTT `json:"rtt"`
-	Error     string      `json:"error,omitempty"`
+	Firmware        uint32      `json:"firmware"`
+	FirmwareVersion string      `json:"firmware_version"`
+	MAC             string      `json:"mac"`
+	Uptime          uint32      `json:"uptime_s"`
+	ID              string      `json:"id"`
+	Name            string      `json:"name"`
+	IP              string      `json:"ip"`
+	Port            uint16      `json:"port"`
+	Enabled         bool        `json:"enabled"`
+	Connected       bool        `json:"connected"`
+	USB             bool        `json:"usb"`
+	RSSI            int32       `json:"rssi"`
+	LEDs            uint32      `json:"leds"`
+	LastValid       time.Time   `json:"last_valid,omitempty"`
+	RTT             session.RTT `json:"rtt"`
+	Error           string      `json:"error,omitempty"`
 }
 type reply struct {
 	session *session.Session
@@ -224,6 +225,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 			r.view.Connected = true
 			r.view.Error = ""
 			r.view.Firmware = conn.Challenge.FwVer
+			r.view.FirmwareVersion = conn.Challenge.FwVersion
 			r.view.MAC = net.HardwareAddr(conn.Challenge.Mac).String()
 			m.mu.Unlock()
 			attempt = 0
@@ -236,6 +238,9 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 				r.view.LastValid = time.Now()
 				if s := message.GetStatus(); s != nil {
 					r.view.Firmware = s.FwVer
+					if s.FwVersion != "" {
+						r.view.FirmwareVersion = s.FwVersion
+					}
 					r.view.Uptime = s.UptimeS
 					r.view.USB = s.UsbMounted
 					r.view.RSSI = s.Rssi

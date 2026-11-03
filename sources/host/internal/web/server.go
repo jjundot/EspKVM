@@ -30,6 +30,7 @@ type PendingView struct {
 }
 type State struct {
 	Input   string         `json:"input"`
+	Version string         `json:"version"`
 	Error   string         `json:"error,omitempty"`
 	Devices []devices.View `json:"devices"`
 	Switch  switcher.View  `json:"switch"`
@@ -37,6 +38,17 @@ type State struct {
 	Hotkey  []uint16       `json:"hotkey"`
 }
 type Operation func(context.Context, string, json.RawMessage) (any, error)
+type PasswordAuth interface {
+	VerifyWebPassword(string) bool
+	ChangeWebPassword(current, next string) error
+}
+type defaultPasswordAuth struct{}
+
+func (defaultPasswordAuth) VerifyWebPassword(password string) bool { return password == "admin" }
+func (defaultPasswordAuth) ChangeWebPassword(string, string) error {
+	return errors.New("password change is unavailable")
+}
+
 type authorization struct {
 	csrf    string
 	expires time.Time
@@ -48,6 +60,7 @@ type Server struct {
 	sessions                map[string]authorization
 	state                   func() State
 	operate                 Operation
+	auth                    PasswordAuth
 	assets                  fs.FS
 	streams                 chan struct{}
 	sequence                atomic.Uint64
@@ -61,6 +74,9 @@ func random() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 func New(host string, state func() State, operate Operation, assets fs.FS) (*Server, string, error) {
+	return NewWithAuth(host, state, operate, assets, defaultPasswordAuth{})
+}
+func NewWithAuth(host string, state func() State, operate Operation, assets fs.FS, auth PasswordAuth) (*Server, string, error) {
 	if host != "127.0.0.1:62626" {
 		return nil, "", errors.New("control UI must bind 127.0.0.1:62626")
 	}
@@ -68,12 +84,20 @@ func New(host string, state func() State, operate Operation, assets fs.FS) (*Ser
 	if e != nil {
 		return nil, "", e
 	}
-	s := &Server{host: host, origin: "http://" + host, bootstrap: token, expires: time.Now().Add(2 * time.Minute), sessions: map[string]authorization{}, state: state, operate: operate, assets: assets, streams: make(chan struct{}, 8)}
+	if auth == nil {
+		return nil, "", errors.New("web password authentication is required")
+	}
+	s := &Server{host: host, origin: "http://" + host, bootstrap: token, expires: time.Now().Add(2 * time.Minute), sessions: map[string]authorization{}, state: state, operate: operate, auth: auth, assets: assets, streams: make(chan struct{}, 8)}
 	return s, token, nil
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/bootstrap", s.exchange)
+	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]string{"version": s.state().Version})
+	})
+	mux.HandleFunc("POST /api/password", s.authorized(s.changePassword))
 	mux.HandleFunc("GET /api/session", s.authorized(func(w http.ResponseWriter, r *http.Request, a authorization) {
 		writeJSON(w, map[string]string{"csrf": a.csrf})
 	}))
@@ -114,6 +138,70 @@ func (s *Server) Handler() http.Handler {
 		mux.ServeHTTP(w, r)
 	})
 }
+
+func (s *Server) issueSession(w http.ResponseWriter) error {
+	cookie, e := random()
+	if e != nil {
+		return e
+	}
+	csrf, e := random()
+	if e != nil {
+		return e
+	}
+	s.sessions[cookie] = authorization{csrf: csrf, expires: time.Now().Add(8 * time.Hour)}
+	http.SetCookie(w, &http.Cookie{Name: "espkvm", Value: cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
+	writeJSON(w, map[string]string{"csrf": csrf})
+	return nil
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	body, e := readBody(w, r)
+	var req struct {
+		Password string `json:"password"`
+	}
+	if e != nil || Decode(body, &req) != nil || len(req.Password) == 0 || len(req.Password) > 128 {
+		http.Error(w, "invalid login request", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.auth.VerifyWebPassword(req.Password) {
+		http.Error(w, "incorrect password", http.StatusUnauthorized)
+		return
+	}
+	if e = s.issueSession(w); e != nil {
+		http.Error(w, "entropy unavailable", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, a authorization) {
+	if !s.writeAllowed(r) || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(a.csrf)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	body, e := readBody(w, r)
+	var req struct {
+		Current string `json:"current"`
+		Next    string `json:"next"`
+	}
+	if e != nil || Decode(body, &req) != nil || len(req.Current) == 0 || len(req.Current) > 128 || len(req.Next) > 128 {
+		http.Error(w, "invalid password request", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e = s.auth.ChangeWebPassword(req.Current, req.Next); e != nil {
+		http.Error(w, e.Error(), http.StatusBadRequest)
+		return
+	}
+	s.sessions = map[string]authorization{}
+	http.SetCookie(w, &http.Cookie{Name: "espkvm", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	w.WriteHeader(http.StatusNoContent)
+}
 func (s *Server) writeAllowed(r *http.Request) bool {
 	media, _, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return e == nil && media == "application/json" && r.Header.Get("Origin") == s.origin
@@ -144,20 +232,10 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bootstrap expired or consumed", http.StatusUnauthorized)
 		return
 	}
-	cookie, e := random()
-	if e != nil {
-		http.Error(w, "entropy unavailable", 500)
-		return
-	}
-	csrf, e := random()
-	if e != nil {
-		http.Error(w, "entropy unavailable", 500)
-		return
-	}
 	s.bootstrap = ""
-	s.sessions[cookie] = authorization{csrf: csrf, expires: time.Now().Add(8 * time.Hour)}
-	http.SetCookie(w, &http.Cookie{Name: "espkvm", Value: cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
-	writeJSON(w, map[string]string{"csrf": csrf})
+	if e = s.issueSession(w); e != nil {
+		http.Error(w, "entropy unavailable", 500)
+	}
 }
 func (s *Server) authorized(next func(http.ResponseWriter, *http.Request, authorization)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

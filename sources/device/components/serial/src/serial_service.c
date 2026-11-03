@@ -2,9 +2,11 @@
 #include "config_store.h"
 #include "ek_crypto.h"
 #include "ek_versions.h"
+#include "ek_build_version.h"
 #include "hid_service.h"
 #include "driver/uart.h"
 #include "esp_mac.h"
+#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "frame.h"
@@ -12,6 +14,8 @@
 #include "freertos/task.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
+#include <stdio.h>
+static const char *TAG = "ek_serial";
 static serial_parser parser;
 static ek_SerialPacket request, response;
 static void clear_request(void) {
@@ -38,8 +42,10 @@ static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *
         case ek_SerialPacket_info_get_tag:
             response.which_body = ek_SerialPacket_info_tag;
             response.body.info.fw_ver = EK_FW_VERSION;
+            snprintf(response.body.info.fw_version, sizeof(response.body.info.fw_version), "%s", EK_FW_VERSION_STRING);
             response.body.info.has_config = true;
             response.body.info.paired = config_get(&response.body.info.config, true);
+            ESP_LOGI(TAG, "UART info request: paired=%u", (unsigned)response.body.info.paired);
             response.body.info.mac.size = 6;
             esp_read_mac(response.body.info.mac.bytes, ESP_MAC_WIFI_STA);
             break;
@@ -47,8 +53,14 @@ static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *
             response.which_body = ek_SerialPacket_cfg_result_tag;
             response.body.cfg_result = config_save(&request.body.cfg_set);
             reboot = response.body.cfg_result.code == 0;
+            if (reboot)
+                ESP_LOGI(TAG, "UART configuration accepted; NVS commit succeeded, restart scheduled");
+            else
+                ESP_LOGW(TAG, "UART configuration rejected: code=%u field=%u",
+                         response.body.cfg_result.code, response.body.cfg_result.field);
             break;
         case ek_SerialPacket_reboot_tag:
+            ESP_LOGI(TAG, "UART reboot requested");
             reboot = true;
             break;
         case ek_SerialPacket_factory_reset_tag: {
@@ -73,9 +85,13 @@ static void request_received(uint32_t seq, const uint8_t *body, size_t n, void *
     uint32_t crc = frame_crc32(tx, total);
     for (unsigned i = 0; i < 4; i++)
         tx[total + i] = (uint8_t)(crc >> (8 * i));
-    uart_write_bytes(UART_NUM_0, tx, total + 4);
-    uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(200));
+    int written = uart_write_bytes(UART_NUM_0, tx, total + 4);
+    esp_err_t tx_result = uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(200));
     if (reboot) {
+        if (written != (int)(total + 4) || tx_result != ESP_OK)
+            ESP_LOGW(TAG, "reply transmission incomplete before restart: written=%d expected=%u wait=%s",
+                     written, (unsigned)(total + 4), esp_err_to_name(tx_result));
+        ESP_LOGI(TAG, "restarting after UART response");
         esp_restart();
     }
 }
@@ -100,5 +116,8 @@ esp_err_t serial_service_start(void) {
         return e;
     if ((e = uart_driver_install(UART_NUM_0, 1024, 1024, 0, NULL, 0)) != ESP_OK)
         return e;
-    return xTaskCreate(task, "serial", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (xTaskCreate(task, "serial", 4096, NULL, 5, NULL) != pdPASS)
+        return ESP_ERR_NO_MEM;
+    ESP_LOGI(TAG, "UART provisioning ready at 115200 baud");
+    return ESP_OK;
 }

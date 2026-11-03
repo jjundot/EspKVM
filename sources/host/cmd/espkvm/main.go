@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/jjundot/EspKVM/internal/capture"
+	"github.com/jjundot/EspKVM/internal/cli"
 	"github.com/jjundot/EspKVM/internal/config"
 	"github.com/jjundot/EspKVM/internal/control"
 	"github.com/jjundot/EspKVM/internal/devices"
@@ -21,18 +23,22 @@ import (
 	"time"
 )
 
-// Populated with embedded static assets once the UI design is approved.
-var assets fs.FS
+//go:embed ui/*
+var ui embed.FS
+var version = "development"
 
 func run() error {
-	storePath := flag.String("store", "", "credential store path")
-	browser := flag.Bool("browser", true, "open the control UI with a one-time fragment credential")
-	bootstrapFile := flag.String("bootstrap-file", "", "create a private launch-URL file; never print the credential in logs")
-	captureInput := flag.Bool("capture", true, "capture physical input; false runs the authenticated control API only")
-	exitAfter := flag.Duration("exit-after", 0, "optional bounded diagnostic runtime")
-	flag.Parse()
-	if *browser && assets == nil {
-		return errors.New("Web UI is not yet available; use -browser=false -bootstrap-file PATH for authenticated API mode")
+	if len(os.Args) > 1 && os.Args[1] == "ctl" {
+		return cli.Run(os.Args[2:])
+	}
+	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	storePath := flags.String("store", "", "credential store path")
+	browser := flags.Bool("browser", true, "open the control UI with a one-time fragment credential")
+	bootstrapFile := flags.String("bootstrap-file", "", "create a private launch-URL file; never print the credential in logs")
+	captureInput := flags.Bool("capture", true, "capture physical input; false runs the authenticated control API only")
+	exitAfter := flags.Duration("exit-after", 0, "optional bounded diagnostic runtime")
+	if e := flags.Parse(os.Args[1:]); e != nil {
+		return e
 	}
 	if !*browser && *bootstrapFile == "" {
 		return errors.New("-browser=false requires -bootstrap-file for private authentication")
@@ -68,9 +74,13 @@ func run() error {
 	}
 	defer manager.Close()
 	go manager.Watch()
-	app := &control.App{Store: store, Devices: manager, Dispatcher: dispatcher, Capture: source}
+	app := &control.App{Store: store, Devices: manager, Dispatcher: dispatcher, Capture: source, Version: version}
 	app.InputStatus("disabled")
-	api, token, e := web.New("127.0.0.1:62626", app.State, app.Operation, assets)
+	assets, e := fs.Sub(ui, "ui")
+	if e != nil {
+		return e
+	}
+	api, token, e := web.NewWithAuth("127.0.0.1:62626", app.State, app.Operation, assets, store)
 	if e != nil {
 		return e
 	}
@@ -87,15 +97,16 @@ func run() error {
 		defer stop()
 		server.Shutdown(shutdown)
 	}()
-	url := "http://127.0.0.1:62626/#" + token
+	baseURL := "http://127.0.0.1:62626/"
+	bootstrapURL := baseURL + "#" + token
 	if *bootstrapFile != "" {
-		if e = config.WritePrivate(*bootstrapFile, []byte(url+"\n")); e != nil {
+		if e = config.WritePrivate(*bootstrapFile, []byte(bootstrapURL+"\n")); e != nil {
 			return e
 		}
 		defer os.Remove(*bootstrapFile)
 	}
 	if *browser {
-		if e = openBrowser(url); e != nil {
+		if e = openBrowser(baseURL); e != nil {
 			return e
 		}
 	}

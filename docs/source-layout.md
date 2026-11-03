@@ -47,8 +47,7 @@ EspKVM/
 │       ├── go.mod
 │       ├── go.sum
 │       ├── cmd/
-│       │   ├── espkvm/main.go         # 常驻客户端与 Web UI
-│       │   └── espkvmctl/main.go      # 配网/诊断 CLI,复用同一业务库
+│       │   └── espkvm/main.go         # 常驻客户端与 Web UI；ctl 子命令入口
 │       └── internal/
 │           ├── protocol/
 │           │   ├── pb/ek.pb.go        # 构建自动生成,忽略不提交
@@ -147,6 +146,6 @@ EspKVM/
 1. 以 WSL 内 `~/src/EspKVM` 为唯一 Git 工作副本,Windows 编辑器通过 WSL Remote 打开。当前 D 盘目录暂不自动迁移或删除,迁移时需保留未提交工作及 Git 状态。
 2. WSL 构建后打包 bootloader、partition table、应用等实际烧录所需 bin,并生成 manifest:包含芯片、偏移、相对文件名、flash 参数和校验值。参数从实际 IDF 构建元数据提取,不手写固定偏移。
 3. Windows flash.ps1 接收包目录和 COM 端口,通过 UNC 路径读取包,必要时复制至 Windows 临时目录。它只消费已完成的构建产物,不用 Windows esptool 直接解析带 WSL 路径的原始 flash_args。
-4. Windows 默认负责物理 COM 配网及烧录。WSL 无串口访问时可使用 Windows espkvmctl;不为首次配网强制引入 usbipd。
+4. Windows 默认负责物理 COM 配网及烧录。WSL 无串口访问时可使用 Windows `espkvm ctl`;不为首次配网强制引入 usbipd。
 
 优先落地 sources/protocol/、sources/device/main、sources/device/components/protocol、sources/host/internal/protocol 和 CMake 生成规则,再逐步补组件;不提前创建只有空壳的全部目录。

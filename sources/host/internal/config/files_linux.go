@@ -8,6 +8,7 @@ func secureDir(p string) error {
 	}
 	return os.Chmod(p, 0700)
 }
+func ensureConfigDir(p string) error { return os.MkdirAll(p, 0700) }
 func secureFile(p string) error { return os.Chmod(p, 0600) }
 func replace(a, b string) error { return os.Rename(a, b) }
 func syncDir(p string) error {

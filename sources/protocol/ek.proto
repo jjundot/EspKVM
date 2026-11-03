@@ -12,6 +12,7 @@ message Challenge {
   bytes  mac       = 4;   // 6B
   bool   paired    = 5;
   string name      = 6;
+  string fw_version = 7; // independent device build version: shortsha_timestamp
 }
 message Auth     { bytes nonce_c = 1; bytes hmac = 2; bytes owner = 3; bool takeover = 4; }  // 16B, 32B
 message AuthOk   { bytes hmac = 1; }                     // 32B
@@ -45,6 +46,7 @@ message Status {
   bool   usb_mounted = 3;
   uint32 kb_leds     = 4;   // bit0 Num, bit1 Caps, bit2 Scroll
   sint32 rssi        = 5;
+  string fw_version  = 6;
 }
 message Config {
   string name     = 1;
@@ -71,6 +73,7 @@ message SerialInfo {
   bytes mac = 2; // 6B
   bool paired = 3;
   Config config = 4; // psk/password 不存在
+  string fw_version = 5;
 }
 message SerialAck {
   uint32 code = 1; // 0=成功,1=不支持版本,2=非法请求,3=存储失败,4=忙

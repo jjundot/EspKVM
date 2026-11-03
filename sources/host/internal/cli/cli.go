@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -17,17 +17,20 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-func run() error {
-	port := flag.String("serial", "", "serial port")
-	addr := flag.String("address", "", "explicit device IP:port")
-	pskFile := flag.String("psk-file", "", "file containing hex PSK (never pass secrets on command line)")
-	cfg := flag.String("config", "", "full device config JSON for serial-set")
-	id := flag.String("id", "", "stable device id")
-	storePath := flag.String("store", "", "client credential path")
-	confirm := flag.Bool("confirm-reset", false, "explicitly authorize factory reset")
-	flag.Parse()
-	if flag.NArg() != 1 {
-		return errors.New("usage: espkvmctl [flags] ports|info|serial-set|reboot|factory-reset|check|verify|pending-list|pending-discard|new-psk")
+func Run(args []string) error {
+	flags := flag.NewFlagSet("espkvm ctl", flag.ContinueOnError)
+	port := flags.String("serial", "", "serial port")
+	addr := flags.String("address", "", "explicit device IP:port")
+	pskFile := flags.String("psk-file", "", "file containing hex PSK (never pass secrets on command line)")
+	cfg := flags.String("config", "", "full device config JSON for serial-set")
+	id := flags.String("id", "", "stable device id")
+	storePath := flags.String("store", "", "client credential path")
+	confirm := flags.Bool("confirm-reset", false, "explicitly authorize factory reset")
+	if e := flags.Parse(args); e != nil {
+		return e
+	}
+	if flags.NArg() != 1 {
+		return errors.New("usage: espkvm ctl [flags] ports|info|serial-set|reboot|factory-reset|check|verify|pending-list|pending-discard|new-psk")
 	}
 	if *storePath == "" {
 		p, e := config.DefaultPath()
@@ -37,7 +40,7 @@ func run() error {
 		*storePath = p
 	}
 	store := config.Open(*storePath)
-	action := flag.Arg(0)
+	action := flags.Arg(0)
 	switch action {
 	case "ports":
 		p, e := serialcfg.Ports()
@@ -134,10 +137,4 @@ func run() error {
 		fmt.Println(string(raw))
 	}
 	return e
-}
-func main() {
-	if e := run(); e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		os.Exit(1)
-	}
 }

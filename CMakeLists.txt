@@ -3,6 +3,13 @@ project(EspKVM LANGUAGES C)
 include(CTest)
 option(BUILD_DEVICE "Enable ESP-IDF firmware targets" OFF)
 option(BUILD_HOST "Enable Go host targets" ON)
+if(BUILD_DEVICE AND (NOT DEFINED EK_GIT_SHA1 OR EK_GIT_SHA1 STREQUAL ""))
+ execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}" rev-parse HEAD
+  OUTPUT_VARIABLE EK_GIT_SHA1 OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE device_git_result)
+ if(NOT device_git_result EQUAL 0 OR NOT EK_GIT_SHA1 MATCHES "^[0-9a-fA-F]+$")
+  message(FATAL_ERROR "Cannot determine Git SHA-1 for device firmware version")
+ endif()
+endif()
 if(WIN32)
  set(managed_python "${CMAKE_SOURCE_DIR}/build/tools/proto/Scripts/python.exe")
 else()
@@ -15,17 +22,23 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_subdirectory(sources/protocol)
 if(BUILD_HOST)
 find_program(GO_EXECUTABLE go REQUIRED)
-add_custom_target(windows-input-probe
- COMMAND "${CMAKE_COMMAND}" -E env GOOS=windows GOARCH=amd64 CGO_ENABLED=0
-  "${GO_EXECUTABLE}" build -trimpath -o "${CMAKE_SOURCE_DIR}/build/host/bin/windows/inputprobe.exe"
-  "${CMAKE_SOURCE_DIR}/experiments/windows-input/main.go"
- VERBATIM)
+if(NOT DEFINED EK_GIT_SHA1 OR EK_GIT_SHA1 STREQUAL "")
+ execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}" rev-parse HEAD
+  OUTPUT_VARIABLE EK_GIT_SHA1 OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE git_result)
+ string(LENGTH "${EK_GIT_SHA1}" git_sha_length)
+ if(NOT git_result EQUAL 0 OR NOT git_sha_length EQUAL 40 OR NOT EK_GIT_SHA1 MATCHES "^[0-9a-fA-F]+$")
+  message(FATAL_ERROR "Cannot determine the full Git SHA-1 for the host build")
+ endif()
+endif()
 add_custom_target(host ALL
- COMMAND "${CMAKE_COMMAND}" -E env GOOS=linux GOARCH=amd64 CGO_ENABLED=0
-  "${GO_EXECUTABLE}" build -trimpath -o "${CMAKE_SOURCE_DIR}/build/host/bin/linux/" ./cmd/...
- COMMAND "${CMAKE_COMMAND}" -E env GOOS=windows GOARCH=amd64 CGO_ENABLED=0
-  "${GO_EXECUTABLE}" build -trimpath -o "${CMAKE_SOURCE_DIR}/build/host/bin/windows/" ./cmd/...
- WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/sources/host" DEPENDS proto-go VERBATIM)
+ COMMAND "${CMAKE_COMMAND}"
+  "-DGO_EXECUTABLE=${GO_EXECUTABLE}"
+  "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+  "-DHOST_SOURCE_DIR=${CMAKE_SOURCE_DIR}/sources/host"
+  "-DOUTPUT_DIR=${CMAKE_SOURCE_DIR}/build/host/bin"
+  "-DEK_GIT_SHA1=${EK_GIT_SHA1}"
+  -P "${CMAKE_SOURCE_DIR}/cmake/BuildHost.cmake"
+ DEPENDS proto-go VERBATIM)
 add_custom_target(test-host
  COMMAND "${GO_EXECUTABLE}" test -race ./...
  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/sources/host" DEPENDS proto-go VERBATIM)
@@ -79,6 +92,15 @@ foreach(test_target protocol-test hid-reports-test hid-engine-test protocol-rand
   endif()
  endif()
 endforeach()
+foreach(test_binary protocol-test hid-reports-test hid-engine-test protocol-random-test protocol-v2-test config-store-test network-native-server linux-input-probe)
+ if(TARGET ${test_binary})
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/build/test")
+  set_target_properties(${test_binary} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/test")
+  foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+   set_target_properties(${test_binary} PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} "${CMAKE_SOURCE_DIR}/build/test")
+  endforeach()
+ endif()
+endforeach()
 if(EK_SANITIZERS)
  foreach(test_target protocol-v2-test config-store-test network-native-server)
   if(TARGET ${test_target})
@@ -90,10 +112,10 @@ endif()
 if(BUILD_DEVICE)
  find_program(IDF_PY idf.py REQUIRED)
  add_custom_target(device ALL COMMAND "${IDF_PY}" -B "${CMAKE_SOURCE_DIR}/build/device/firmware"
-  -D "Python3_EXECUTABLE=${Python3_EXECUTABLE}" build
+  -D "Python3_EXECUTABLE=${Python3_EXECUTABLE}" -D "EK_GIT_SHA1=${EK_GIT_SHA1}" build
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/sources/device" USES_TERMINAL VERBATIM)
  add_custom_target(proto-device COMMAND "${IDF_PY}" -B "${CMAKE_SOURCE_DIR}/build/device/firmware"
-  -D "Python3_EXECUTABLE=${Python3_EXECUTABLE}" reconfigure
+  -D "Python3_EXECUTABLE=${Python3_EXECUTABLE}" -D "EK_GIT_SHA1=${EK_GIT_SHA1}" reconfigure
   COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_SOURCE_DIR}/build/device/firmware" --target proto-c
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/sources/device" USES_TERMINAL VERBATIM)
  add_dependencies(proto proto-device)

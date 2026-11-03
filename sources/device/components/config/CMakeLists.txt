@@ -1,2 +1,2 @@
-idf_component_register(SRCS src/config_store.c INCLUDE_DIRS include REQUIRES protocol nvs_flash)
+idf_component_register(SRCS src/config_store.c INCLUDE_DIRS include REQUIRES protocol nvs_flash log)
 add_dependencies(${COMPONENT_LIB} proto-c)

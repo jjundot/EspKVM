@@ -12,15 +12,18 @@ void app_main(void) {
     ESP_ERROR_CHECK(config_init());
     static ek_Config config;
     bool paired = config_get(&config, false);
+    ESP_LOGI(TAG, "boot: configuration loaded, paired=%u", (unsigned)paired);
     // Keep the USB keyboard/mouse available with safe defaults before network
     // provisioning; TCP configuration is exposed only after pairing.
     esp_err_t hid_err = hid_service_start(&config);
     ESP_LOGI(TAG, "HID start: %s (VID=%04x PID=%04x paired=%u)", esp_err_to_name(hid_err),
-             config.usb_vid, config.usb_pid, paired);
+             (unsigned)config.usb_vid, (unsigned)config.usb_pid, (unsigned)paired);
     ESP_ERROR_CHECK(hid_err);
     if (paired) {
+        ESP_LOGI(TAG, "boot: starting Wi-Fi and TCP service");
         ESP_ERROR_CHECK(network_service_start(&config));
     }
     ek_zero(&config, sizeof(config));
+    ESP_LOGI(TAG, "boot: starting UART provisioning service");
     ESP_ERROR_CHECK(serial_service_start());
 }

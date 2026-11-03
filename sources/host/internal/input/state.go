@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// DefaultHotkey returns the default local input target switch shortcut:
+// left Ctrl + left Alt + W.
+func DefaultHotkey() []uint16 { return []uint16{0xe0, 0xe2, 0x1a} }
+
 type Kind uint8
 
 const (

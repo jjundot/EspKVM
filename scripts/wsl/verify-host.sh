@@ -12,5 +12,5 @@ cmake --build "$build" --target proto | tee "$build/no-change.log"
 ! grep -q 'Generating' "$build/no-change.log"
 cd "$root/sources/host"
 go vet ./...
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$root/build/host/bin/windows/" ./cmd/...
+mkdir -p "$root/build/host/bin"
 go test ./internal/protocol -run '^$' -fuzz FuzzSerial -fuzztime 5s

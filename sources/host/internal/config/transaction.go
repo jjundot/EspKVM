@@ -38,8 +38,8 @@ func (s *Store) Provision(c SerialRequester, id string, candidate *pb.Config) er
 	if info == nil {
 		return protocol.ErrFrame
 	}
-	if _, e = protocol.ValidateConfig(candidate, info.Paired); e != nil {
-		return e
+	if field, validateErr := protocol.ValidateConfig(candidate, info.Paired); validateErr != nil {
+		return fmt.Errorf("invalid configuration field %d: %w", field, validateErr)
 	}
 	e = s.Update(func(d *Data) error {
 		for _, p := range d.Pending {

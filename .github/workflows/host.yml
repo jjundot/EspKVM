@@ -22,7 +22,6 @@ jobs:
         if: runner.os == 'Windows'
       - run: cmake -S . -B build/host/cmake/ci -G Ninja
       - run: cmake --build build/host/cmake/ci
-      - run: cmake --build build/host/cmake/ci --target windows-input-probe
       - run: cmake --build build/host/cmake/ci --target test-host test-protocol
       - name: No-change and schema dependency rebuild
         shell: bash

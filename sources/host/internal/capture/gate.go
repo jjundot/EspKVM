@@ -19,7 +19,7 @@ type routing struct {
 
 func (g *routing) init() {
 	if g.hotkey == nil {
-		g.hotkey, _ = input.NewHotkey([]uint16{0xe0, 0xe4})
+		g.hotkey, _ = input.NewHotkey(input.DefaultHotkey())
 	}
 	if g.suppressed == nil {
 		g.suppressed = map[uint32]bool{}

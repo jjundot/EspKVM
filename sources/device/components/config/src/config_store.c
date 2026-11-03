@@ -2,12 +2,21 @@
 #include "frame.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+#else
+#define ESP_LOGE(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
+#endif
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
 #include <ctype.h>
+#include <inttypes.h>
 #include <string.h>
+static const char *TAG = "ek_config";
 static StaticSemaphore_t mutex_storage;
 static SemaphoreHandle_t mutex;
 static ek_Config active;
@@ -122,10 +131,14 @@ esp_err_t config_init(void) {
     active=(ek_Config)ek_Config_init_zero;paired=false;generation=0;
     mutex = xSemaphoreCreateMutexStatic(&mutex_storage);
     esp_err_t e = nvs_flash_init();
-    if (e != ESP_OK)
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "NVS initialization failed: %s", esp_err_to_name(e));
         return e;
-    if ((e = nvs_open("ek", NVS_READWRITE, &handle)) != ESP_OK)
+    }
+    if ((e = nvs_open("ek", NVS_READWRITE, &handle)) != ESP_OK) {
+        ESP_LOGE(TAG, "NVS namespace open failed: %s", esp_err_to_name(e));
         return e;
+    }
     ek_Config c;
     bool pair;
     uint32_t gen;
@@ -136,6 +149,7 @@ esp_err_t config_init(void) {
             paired = pair;
             generation = gen;
         }
+    ESP_LOGI(TAG, "configuration loaded: paired=%u generation=%" PRIu32, (unsigned)paired, generation);
     return ESP_OK;
 }
 bool config_get(ek_Config *out, bool redact) {
@@ -187,6 +201,9 @@ static esp_err_t commit(const ek_Config *c, bool pair) {
         active = *c;
         paired = pair;
         generation = next;
+        ESP_LOGI(TAG, "configuration committed to NVS: paired=%u generation=%" PRIu32, (unsigned)pair, next);
+    } else {
+        ESP_LOGE(TAG, "NVS configuration commit failed: %s", esp_err_to_name(e));
     }
     return e;
 }
@@ -194,6 +211,7 @@ ek_ConfigResult config_save(const ek_Config *candidate) {
     ek_ConfigResult result = ek_ConfigResult_init_zero;
     if (xSemaphoreTake(mutex, 0) != pdTRUE) {
         result.code = 3;
+        ESP_LOGW(TAG, "configuration write rejected: store busy");
         return result;
     }
     ek_Config next = *candidate;
@@ -208,6 +226,7 @@ ek_ConfigResult config_save(const ek_Config *candidate) {
     result.field = config_validate(&next, false);
     if (result.field) {
         result.code = 1;
+        ESP_LOGW(TAG, "configuration rejected by validation: field=%" PRIu32, result.field);
     } else {
         if (commit(&next, true) != ESP_OK)
             result.code = 2;

@@ -5,9 +5,12 @@
 #include "hid_service.h"
 #include "message_validate.h"
 #ifdef EK_NETWORK_HOST_TEST
+#define EK_FW_VERSION_STRING "native-test"
 #include "network_host.h"
 #else
+#include "ek_build_version.h"
 #include "esp_event.h"
+#include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_random.h"
@@ -24,8 +27,13 @@
 #include "pb_encode.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
+
+#ifndef EK_NETWORK_HOST_TEST
+static const char *TAG = "ek_network";
+#endif
 
 // Four static contexts: one active connection plus at most three handshakes.
 typedef struct {
@@ -147,6 +155,7 @@ static bool handshake(connection *c) {
     ek_Challenge *ch = &c->msg.body.challenge;
     ch->proto_ver = EK_PROTO_VERSION;
     ch->fw_ver = EK_FW_VERSION;
+    snprintf(ch->fw_version, sizeof(ch->fw_version), "%s", EK_FW_VERSION_STRING);
     ch->paired = true;
     ch->nonce_d.size = 16;
     esp_fill_random(ch->nonce_d.bytes, 16);
@@ -214,6 +223,7 @@ static bool status(connection *c) {
     c->msg.which_body = ek_Msg_status_tag;
     ek_Status *s = &c->msg.body.status;
     s->fw_ver = EK_FW_VERSION;
+    snprintf(s->fw_version, sizeof(s->fw_version), "%s", EK_FW_VERSION_STRING);
     s->uptime_s = now_ms() / 1000;
     s->usb_mounted = hid_mounted();
     s->kb_leds = hid_leds();
@@ -464,12 +474,24 @@ static void accept_task(void *arg) {
 #ifndef EK_NETWORK_HOST_TEST
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg;
-    (void)data;
-    if (base == WIFI_EVENT && (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_STA_DISCONNECTED)) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         atomic_store(&online, false);
+        ESP_LOGI(TAG, "Wi-Fi station started; connecting");
         esp_wifi_connect();
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = data;
+        atomic_store(&online, false);
+        ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u; reconnecting",
+                 (unsigned)(event ? event->reason : 0));
+        esp_wifi_connect();
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *event = data;
         atomic_store(&online, true);
+        if (event)
+            ESP_LOGI(TAG, "Wi-Fi connected; IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        else
+            ESP_LOGI(TAG, "Wi-Fi connected and received IP");
+    }
 }
 #endif
 esp_err_t network_service_start(const ek_Config *config) {
@@ -490,6 +512,8 @@ esp_err_t network_service_start(const ek_Config *config) {
     esp_netif_ip_info_t ip = {.ip.addr = htonl(config->ip),
                               .gw.addr = htonl(config->gw),
                               .netmask.addr = htonl(config->mask)};
+    ESP_LOGI(TAG, "starting network service: static IP=" IPSTR ", TCP port=%u",
+             IP2STR(&ip.ip), (unsigned)port);
     ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip));
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));

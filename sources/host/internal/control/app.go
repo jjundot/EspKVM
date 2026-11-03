@@ -27,12 +27,13 @@ type App struct {
 	Devices     *devices.Manager
 	Dispatcher  *switcher.Dispatcher
 	Capture     capture.Source
+	Version     string
 	inputStatus atomic.Value
 }
 
 func (a *App) InputStatus(value string) { a.inputStatus.Store(value) }
 func (a *App) State() web.State {
-	state := web.State{Devices: a.Devices.Views(), Switch: a.Dispatcher.View()}
+	state := web.State{Devices: a.Devices.Views(), Switch: a.Dispatcher.View(), Version: a.Version}
 	if v := a.inputStatus.Load(); v != nil {
 		state.Input = v.(string)
 	}
@@ -189,6 +190,25 @@ func (a *App) Operation(ctx context.Context, name string, body json.RawMessage) 
 		candidate := new(pb.Config)
 		if protojson.Unmarshal(req.Config, candidate) != nil {
 			return nil, errors.New("invalid device configuration JSON")
+		}
+		defer func() { clear(candidate.Psk) }()
+		if candidate.Psk == nil {
+			data, e := a.Store.Load()
+			if e != nil {
+				return nil, e
+			}
+			for _, device := range data.Devices {
+				if device.ID == req.ID {
+					candidate.Psk, e = hex.DecodeString(device.PSK)
+					if e != nil || len(candidate.Psk) != 16 {
+						return nil, errors.New("saved device PSK must be exactly 16 bytes")
+					}
+					break
+				}
+			}
+			if candidate.Psk == nil {
+				return nil, errors.New("save the device and its PSK before serial provisioning")
+			}
 		}
 		return nil, a.Store.Provision(c, req.ID, candidate)
 	case "device-config-set":

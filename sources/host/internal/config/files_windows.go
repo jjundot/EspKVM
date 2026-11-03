@@ -27,6 +27,7 @@ func secureDir(p string) error {
 	}
 	return acl(p, true)
 }
+func ensureConfigDir(p string) error { return os.MkdirAll(p, 0700) }
 func secureFile(p string) error { return acl(p, false) }
 func replace(a, b string) error {
 	src, e := syscall.UTF16PtrFromString(a)

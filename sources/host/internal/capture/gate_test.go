@@ -10,13 +10,13 @@ func TestHookMakesSynchronousHotkeyDecision(t *testing.T) {
 	event := func(code uint16, down bool) bool {
 		return g.observe(input.Event{Device: "hook", Kind: input.Key, Code: code, Down: down})
 	}
-	if event(0xe0, true) {
-		t.Fatal("first Ctrl was delayed")
+	if event(0xe0, true) || event(0xe2, true) {
+		t.Fatal("shortcut modifiers were delayed")
 	}
-	if !event(0xe4, true) {
-		t.Fatal("completing Ctrl was not swallowed")
+	if !event(0x1a, true) {
+		t.Fatal("completing Ctrl+Alt+W was not swallowed")
 	}
-	if !event(4, true) || !event(0xe0, false) || !event(0xe4, false) {
+	if !event(4, true) || !event(0xe0, false) || !event(0xe2, false) || !event(0x1a, false) {
 		t.Fatal("combination suppression ended early")
 	}
 	if !event(4, false) {

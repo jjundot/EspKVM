@@ -166,7 +166,7 @@ func TestHotkeyRecordingDoesNotSwitch(t *testing.T) {
 	wait(t, func() bool { return d.View().Recording })
 	combo := func() {
 		for _, down := range []bool{true, false} {
-			for _, code := range []uint16{0xe0, 0xe4} {
+			for _, code := range []uint16{0xe0, 0xe2, 0x1a} {
 				d.Input(input.Event{Device: "kbd", Kind: input.Key, Code: code, Down: down})
 			}
 		}

@@ -29,7 +29,7 @@
 
 ## 未完成及外部条件
 
-1. Web UI 前端尚未生成/嵌入；Superdesign 登录超时，等待用户选择“跳过设计直接实现”或完成登录并审阅设计。当前 espkvm 默认浏览器模式会明确拒绝启动，不打开空白控制页；可使用经过验证的 API 模式。
+1. Web UI 已嵌入 espkvm，仍待用户桌面验收布局、登录链接和串口/设备配置流程。
 2. M1 烧录缺少明确串口及具有合法使用依据的 VID/PID，当前串口扫描无设备。不得沿用 Logitech 的默认标识，已有旧 sdkconfig 需显式检查。
 3. Windows 实际敲键/移动、吞键后 Raw Input、提权/安全桌面/锁屏恢复；Linux 真实 evdev、抓取/热插拔及多设备行为；全部仍待用户桌面验收。
 4. 真实 ESP32-S3 的 WiFi/TCP/GCM、USB/BIOS、释放确认、NVS 断电及故障注入验收；500 ms 释放边界须实测确认。
@@ -44,5 +44,7 @@ pending-list 不输出凭据；pending-discard 只删除本地恢复数据，不
 ```sh
 espkvm -capture=false -browser=false -bootstrap-file /private/espkvm-launch.txt
 ```
+
+正式控制页使用默认 `-browser=true` 自动打开。配网和诊断子命令集成在同一程序中：`espkvm ctl ...`。
 
 启动文件必须不存在，放在用户私有目录。它包含短时、单次 URL fragment 凭据，不能放到共享目录或日志；退出后删除。API 用法见后续前端实现，当前可在开发测试中验证 cookie/CSRF 路径。
