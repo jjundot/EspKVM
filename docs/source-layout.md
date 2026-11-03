@@ -63,12 +63,12 @@ EspKVM/
 │           ├── control/           # Web/CLI 共用的业务操作
 │           ├── web/server.go      # HTTP API、登录/会话、Host/Origin/CSRF、SSE
 │           ├── cli/               # espkvm ctl
+│           ├── service/           # install/uninstall/start/stop/status：systemd 单元、登录计划任务、udev 规则
 │           └── debuglog/
 ├── scripts/
 │   ├── wsl/                       # bootstrap、check-toolchain、build、build-snapshot、package-device、verify-host
 │   └── windows/                   # flash.ps1、build-host.ps1
 ├── tools/                         # versions.env、generate.py、generate_vectors.cjs、package_device.py 及依赖清单
-├── packaging/linux/               # udev 规则、安装/卸载脚本
 ├── experiments/
 │   ├── usb-hid/                   # M1 独立 IDF 工程
 │   ├── windows-input/             # M0 Windows 探针及原始记录
@@ -152,4 +152,16 @@ EspKVM/
 
   配置 JSON 使用 ek.proto 的 protobuf JSON 映射。首次配置必须同时提供 password（开放网络传显式空字符串）和 base64 编码的 16 字节 PSK。
 - **凭据文件**：客户端可执行文件旁的 `config.json`（Windows ACL 只允许当前用户和 SYSTEM，Linux 为 0600）。
-- **Linux 安装**：`sudo bash packaging/linux/install.sh USER`，安装客户端和输入设备 udev 规则，重新登录后生效；卸载用 `packaging/linux/uninstall.sh`。
+- **自启动**：发布物只有一个可执行文件，`install` 在原位置注册它，config.json 仍在其旁边；移动可执行文件后需重新 `install`。
+
+  ```sh
+  espkvm                          # 前台运行
+  espkvm install                  # Linux 用 sudo；Windows 用管理员终端
+  espkvm start|stop|restart|status
+  espkvm uninstall
+  espkvm help                     # 全部命令与参数
+  ```
+
+  - Linux：写入 systemd 系统单元 `espkvm.service`（开机启动，登录界面也可切换）和输入设备 udev 规则。服务以可执行文件所在目录的属主运行，附加 `espkvm` 与 `dialout`/`uucp` 组；只有该目录可写。日志：`journalctl -u espkvm -f`。前台运行同样需要先 `install` 一次以获得 udev 规则，并重新登录取得组权限。
+  - Windows：注册登录触发的计划任务 `EspKVM`（最高权限、无窗口、失败自动重启）。低级键鼠钩子只在用户交互会话里有效，所以不做成 Windows 服务；锁屏、UAC 安全桌面期间无法捕获。`stop` 通过命名事件让进程正常退出，不需要管理员。
+  - 自启动时不自动打开浏览器，直接访问 `http://127.0.0.1:62626` 用密码登录。

@@ -45,6 +45,8 @@ flowchart LR
 
 切换到远程目标后，本机键鼠输入会被拦截，不再作用于 HOST 自己。活动设备一旦断线或 USB 拔出，客户端立即退回本机。
 
+开机/登录自启动：`sudo espkvm install`（Linux，systemd）或在管理员终端运行 `espkvm install`（Windows，计划任务），见[源码目录与构建](docs/source-layout.md)。
+
 首次使用流程：在 Web 控制台添加设备（生成 PSK）→ 用 USB 串口给 DEVICE 写入 WiFi、固定 IP 和 PSK → DEVICE 重启联网 → 客户端通过 TCP 认证连接，之后的配置修改都走网络。
 
 ## 使用场景

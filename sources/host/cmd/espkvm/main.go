@@ -13,6 +13,7 @@ import (
 	"github.com/jjundot/EspKVM/internal/debuglog"
 	"github.com/jjundot/EspKVM/internal/devices"
 	"github.com/jjundot/EspKVM/internal/input"
+	"github.com/jjundot/EspKVM/internal/service"
 	"github.com/jjundot/EspKVM/internal/switcher"
 	"github.com/jjundot/EspKVM/internal/web"
 	"io/fs"
@@ -28,25 +29,65 @@ import (
 var ui embed.FS
 var version = "development"
 
+const usage = `EspKVM host %s
+
+usage:
+  espkvm [flags]          run in the foreground
+  espkvm install          start automatically (Linux: systemd, sudo; Windows: logon task, administrator)
+  espkvm uninstall        remove automatic start
+  espkvm start            start the installed service
+  espkvm stop             stop the running host gracefully
+  espkvm restart          stop, then start
+  espkvm status           show whether it is installed and running
+  espkvm ctl ...          device tools; espkvm ctl -h for details
+  espkvm help             show this help
+
+Control UI: http://127.0.0.1:62626
+
+flags:
+`
+
 func run() error {
-	if len(os.Args) > 1 && os.Args[1] == "ctl" {
-		return cli.Run(os.Args[2:])
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "ctl" {
+		return cli.Run(args[1:])
 	}
-	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	if len(args) > 0 && service.IsCommand(args[0]) {
+		if len(args) > 1 {
+			return fmt.Errorf("espkvm %s takes no arguments", args[0])
+		}
+		return service.Run(args[0])
+	}
+	flags := flag.NewFlagSet("espkvm", flag.ContinueOnError)
+	flags.Usage = func() {
+		fmt.Fprintf(flags.Output(), usage, version)
+		flags.PrintDefaults()
+	}
 	storePath := flags.String("store", "", "credential store path")
 	browser := flags.Bool("browser", true, "open the control UI with a one-time fragment credential")
 	bootstrapFile := flags.String("bootstrap-file", "", "create a private launch-URL file; never print the credential in logs")
 	captureInput := flags.Bool("capture", true, "capture physical input; false runs the authenticated control API only")
 	exitAfter := flags.Duration("exit-after", 0, "optional bounded diagnostic runtime")
 	debug := flags.Bool("debug", false, "enable diagnostic logging")
-	if e := flags.Parse(os.Args[1:]); e != nil {
+	if len(args) > 0 {
+		switch args[0] {
+		case "help", "-h", "-help", "--help":
+			// Requested help is normal output, not an error.
+			flags.SetOutput(os.Stdout)
+			flags.Usage()
+			return nil
+		}
+	}
+	if e := flags.Parse(args); errors.Is(e, flag.ErrHelp) {
+		return nil
+	} else if e != nil {
 		return e
+	}
+	if flags.NArg() > 0 {
+		return fmt.Errorf("unknown command %q; see espkvm help", flags.Arg(0))
 	}
 	debuglog.SetEnabled(*debug)
 	debuglog.Printf("host", "starting version=%s capture=%t browser=%t", version, *captureInput, *browser)
-	if !*browser && *bootstrapFile == "" {
-		return errors.New("-browser=false requires -bootstrap-file for private authentication")
-	}
 	if *storePath == "" {
 		p, e := config.DefaultPath()
 		if e != nil {
@@ -56,6 +97,16 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if e := service.WatchStop(cancel); e != nil {
+		return e
+	}
+	// Bind before touching devices so a second instance cannot take over the
+	// device connections or input grab of the running one.
+	listener, e := net.Listen("tcp4", "127.0.0.1:62626")
+	if e != nil {
+		return fmt.Errorf("%w (is EspKVM already running? see espkvm status)", e)
+	}
+	defer listener.Close()
 	if *exitAfter > 0 {
 		var stop context.CancelFunc
 		ctx, stop = context.WithTimeout(ctx, *exitAfter)
@@ -88,11 +139,6 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	listener, e := net.Listen("tcp4", "127.0.0.1:62626")
-	if e != nil {
-		return e
-	}
-	defer listener.Close()
 	debuglog.Printf("host", "control API listening on %s", listener.Addr())
 	server := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
 	serving := make(chan error, 1)
