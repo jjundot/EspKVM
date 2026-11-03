@@ -128,3 +128,28 @@ EspKVM/
 3. Windows flash.ps1 接收包目录和 COM 端口,通过 UNC 路径读取包,必要时复制至 Windows 临时目录。它只消费已完成的构建产物,不用 Windows esptool 直接解析带 WSL 路径的原始 flash_args。
 4. Windows 默认负责物理 COM 配网及烧录。WSL 无串口访问时可使用 Windows `espkvm ctl`;不为首次配网强制引入 usbipd。
 
+
+## 构建、烧录与 CLI 速查
+
+以下内容从 README 移入。
+
+- **VS Code 任务**：只有 build / rebuild 两项（`Ctrl+Shift+B` 默认 build），再选 Host 或 Device。Host 产出 `build/host/bin/espkvm_{x86_64_windows,x86_64_linux,aarch64_linux}.exe`；Device 产出正式固件和 M1 固件的烧录包。Windows 通过 `wsl.exe` 调用 `scripts/wsl/build.sh`，不需要 Windows CMake。
+- **WSL 首次准备**：`bash scripts/wsl/bootstrap.sh`，需要 Go 1.27.3、Python 3.12、CMake ≥ 3.24、Ninja、GCC、ESP-IDF v6.0.3。proto 由 CMake 自动生成；首次构建前不要运行 `go mod tidy`。
+- **Windows 客户端构建**：`./scripts/windows/build-host.ps1 -Test`（需先安装 `tools/requirements-proto.txt` 及 `protoc-gen-go@v1.36.6`）。
+- **烧录**：安装 `tools/requirements-flash.txt` 中的 esptool 后，执行 `./scripts/windows/flash.ps1 -Package <build/device/flash/firmware/包目录> -Port COM3`；脚本复制后校验 manifest 和 SHA-256，全部匹配才烧录。
+- **原生测试**：设置 `EK_PSA_SOURCE` 为 ESP-IDF 的 `components/mbedtls/mbedtls/tf-psa-crypto`，`--target test-protocol` 运行 C 向量、HID 引擎、NVS 模型以及 C 会话与 Go 客户端的互通测试；Linux 可加 `-DEK_SANITIZERS=ON`。
+- **CLI**（参数放在子命令前）：
+
+  ```sh
+  espkvm ctl ports
+  espkvm ctl -serial COM5 info
+  espkvm ctl -serial COM5 serial-log -duration 30s
+  espkvm ctl -serial COM5 -id desk -config device.json serial-set
+  espkvm ctl pending-list
+  espkvm ctl -id desk verify
+  espkvm ctl -address 192.168.1.10:24800 -psk-file secret.hex check
+  ```
+
+  配置 JSON 使用 ek.proto 的 protobuf JSON 映射。首次配置必须同时提供 password（开放网络传显式空字符串）和 base64 编码的 16 字节 PSK。
+- **凭据文件**：客户端可执行文件旁的 `config.json`（Windows ACL 只允许当前用户和 SYSTEM，Linux 为 0600）。
+- **Linux 安装**：`sudo bash packaging/linux/install.sh USER`，安装客户端和输入设备 udev 规则，重新登录后生效；卸载用 `packaging/linux/uninstall.sh`。
