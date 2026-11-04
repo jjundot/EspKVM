@@ -161,14 +161,16 @@ function firmwareLabel(value) {
 }
 function keepAwakeLabel(d) {
   if (!d.connected) return '设备未连接';
-  return ['未启用','暂停：HOST 心跳超时','暂停：HOST 无近期操作','已停止：超过 C 未操作此设备','等待空闲间隔','保持中'][d.keep_awake_state] || '未知';
+  return ['未启用','暂停：HOST 心跳超时','暂停：HOST 无近期操作','已停止：超过 C 未操作此设备','等待空闲间隔','保持中','暂停：HOST 已锁屏','暂停：无法判断 HOST 锁屏状态'][d.keep_awake_state] || '未知';
 }
 // Green: moved just now; blue: C not reached, will keep moving; gray: off or stopped.
 function keepAwakeTone(d) {
+  if (d.connected && d.keep_awake_state === 6) return {tone:'stopped', hint:'HOST 解锁后恢复保持'};
+  if (d.connected && d.keep_awake_state === 7) return {tone:'stopped', hint:'无法判断 HOST 是否锁屏，不会保持'};
   if (!d.connected || !d.keep_awake_state || d.keep_awake_state === 3) return {tone:'stopped', hint:d.keep_awake_state === 3 ? '已超过 C 未操作此设备，不再保持；切到该设备操作一次即恢复' : '不会保持'};
   const timestamp = Date.parse(d.keep_awake_last_move_at || ''), age = Date.now() - timestamp;
   if (Number.isFinite(timestamp) && age >= 0 && age < 20000) return {tone:'kept', hint:'刚刚保持过'};
-  return {tone:'pending', hint:'尚未超过 C，还会继续保持'};
+  return {tone:'pending', hint:'条件满足时会继续保持'};
 }
 function keepAwakeMoveMarkup(d) {
   const timestamp = Date.parse(d.keep_awake_last_move_at || '');
@@ -181,6 +183,9 @@ function setupKeepAwake(form, container) {
   const fields=document.createElement('fieldset'); fields.className='keep-awake-fields';
   fields.innerHTML=`<legend>防休眠策略</legend><label class="check"><input name="keepAwakeEnabled" type="checkbox">启用此设备的防休眠</label>
     <p class="keep-awake-unsupported muted small" hidden>当前设备固件未提供防休眠配置，请先升级固件。</p>
+    <label>保持模式<select name="keepAwakeMode"><option value="0">按操作活动（C、D）</option><option value="1">跟随 HOST 锁屏</option></select></label>
+    <p class="keep-awake-mode-unsupported muted small" hidden>当前设备固件不支持“跟随 HOST 锁屏”，请先升级固件。</p>
+    <p class="keep-awake-lock-note muted small" hidden>HOST 未锁屏时保持，C、D 不生效。HOST 锁屏、睡眠、离线或无法判断锁屏状态时暂停。请为 HOST 配置自动锁屏，否则离开后会一直保持。</p>
     <div class="two-col"><label>最短空闲检查间隔 A（秒）<input name="keepAwakeMin" type="number" min="1" max="86400" step="1" value="30" required></label><label>最长空闲检查间隔 B（秒）<input name="keepAwakeMax" type="number" min="1" max="86400" step="1" value="60" required></label></div>
     <p class="muted small">每次从 A～B 秒中随机选择间隔。期间操作该设备会重新计时；空闲到期时轻微随机移动鼠标。</p>
     <label>设备无主动操作后停止 C（秒）<input name="keepAwakeStop" type="number" min="0" max="4294967295" step="1" value="1800" required></label>
@@ -190,25 +195,34 @@ function setupKeepAwake(form, container) {
     <p class="muted small keep-awake-save-note">随设备配置一起保存至 ESP32，保存后设备重启生效。</p>`;
   if(container)container.append(fields); else form.querySelector('.actions').before(fields);
   form.elements.keepAwakeEnabled.onchange=()=>{ updateKeepAwakeFields(form); toast('防休眠策略将在保存设备配置后生效。','info'); };
+  form.elements.keepAwakeMode.onchange=()=>updateKeepAwakeFields(form);
   writeKeepAwake(form, {enabled:false,interval_min_s:30,interval_max_s:60,stop_after_s:1800,host_active_within_s:120});
 }
 function updateKeepAwakeFields(form) {
   const supported=form.dataset.keepAwakeSupported==='true';
   form.elements.keepAwakeEnabled.disabled=!supported;
-  for(const name of ['keepAwakeMin','keepAwakeMax','keepAwakeStop','keepAwakeHost'])form.elements[name].disabled=!supported||!form.elements.keepAwakeEnabled.checked;
+  const active=supported&&form.elements.keepAwakeEnabled.checked, modeSupported=form.dataset.keepAwakeModeSupported==='true', followsLock=form.elements.keepAwakeMode.value==='1';
+  for(const name of ['keepAwakeMin','keepAwakeMax'])form.elements[name].disabled=!active;
+  for(const name of ['keepAwakeStop','keepAwakeHost'])form.elements[name].disabled=!active||followsLock;
+  form.elements.keepAwakeMode.disabled=!active||!modeSupported;
   form.querySelector('.keep-awake-unsupported').hidden=supported;
+  form.querySelector('.keep-awake-mode-unsupported').hidden=!supported||modeSupported;
+  form.querySelector('.keep-awake-lock-note').hidden=!followsLock;
 }
-function writeKeepAwake(form, policy) {
+// Older firmware silently drops KeepAwake.mode, so only its version can tell.
+const keepAwakeModeFirmware=0x000200;
+function writeKeepAwake(form, policy, firmware) {
   form.dataset.keepAwakeSupported=policy?'true':'false';
+  form.dataset.keepAwakeModeSupported=Number(firmware||0)>=keepAwakeModeFirmware?'true':'false';
   const f=form.elements, p=policy||{};
   f.keepAwakeEnabled.checked=!!p.enabled; f.keepAwakeMin.value=p.interval_min_s??30; f.keepAwakeMax.value=p.interval_max_s??60;
-  f.keepAwakeStop.value=p.stop_after_s??1800; f.keepAwakeHost.value=p.host_active_within_s??120;
+  f.keepAwakeStop.value=p.stop_after_s??1800; f.keepAwakeHost.value=p.host_active_within_s??120; f.keepAwakeMode.value=String(p.mode??0);
   updateKeepAwakeFields(form);
 }
 function readKeepAwake(form) {
   if(form.dataset.keepAwakeSupported!=='true')return undefined;
   const f=form.elements;
-  const p={enabled:f.keepAwakeEnabled.checked,interval_min_s:Number(f.keepAwakeMin.value),interval_max_s:Number(f.keepAwakeMax.value),stop_after_s:Number(f.keepAwakeStop.value),host_active_within_s:Number(f.keepAwakeHost.value)};
+  const p={enabled:f.keepAwakeEnabled.checked,interval_min_s:Number(f.keepAwakeMin.value),interval_max_s:Number(f.keepAwakeMax.value),stop_after_s:Number(f.keepAwakeStop.value),host_active_within_s:Number(f.keepAwakeHost.value),mode:Number(f.keepAwakeMode.value)};
   if(!Object.entries(p).every(([k,v])=>k==='enabled'||Number.isInteger(v)&&v>=0&&v<=4294967295)||p.interval_min_s<1||p.interval_max_s>86400||p.interval_min_s>p.interval_max_s)throw new Error('防休眠参数不正确：A 和 B 必须为 1～86400 的整数，且 A 不能大于 B；C 和 D 必须是非负整数。');
   return p;
 }
@@ -255,7 +269,7 @@ $('#device-form').onsubmit = e => { if(e.submitter?.value==='cancel')return; e.p
 $('#mouse-guard').onchange = e => { const enabled = e.target.checked; act(() => api('mouse-guard', {enabled}), enabled ? '已开启：本机模式下 Ctrl + 侧键不再传给桌面。' : '已关闭：侧键恢复直接交给本机桌面。', e.target); };
 $('#record-hotkey').onclick = () => { const active=!state?.switch?.recording; act(async()=>{ await api('recording',{active}); }, active?'已开始录制，请按下并释放要用作切换键的组合。':'热键录制已结束。', $('#record-hotkey')); };
 function dotted(n) { return [24,16,8,0].map(s=>(n>>>s)&255).join('.'); }
-async function openConfig(id, button) { const d=state.devices.find(x=>x.id===id); const f=$('#config-form'); const old=button?.textContent; if(button){button.disabled=true;button.textContent='读取配置…';} notice(''); f.reset(); f.elements.id.value=id; try { const c=await api('device-config-get',{id}); f.elements.deviceName.value=c.name||d?.name||''; f.elements.ssid.value=c.ssid||''; f.elements.ip.value=dotted(c.ip); f.elements.gw.value=dotted(c.gw); f.elements.mask.value=dotted(c.mask); f.dataset.vid=c.usb_vid; f.dataset.pid=c.usb_pid; f.dataset.port=c.tcp_port||24800; f.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(f,c.keep_awake); $('#config-dialog').showModal(); toast('设备配置已读取。','success'); } catch(e) { showError(e); } finally {if(button?.isConnected){button.disabled=false;button.textContent=old;}} }
+async function openConfig(id, button) { const d=state.devices.find(x=>x.id===id); const f=$('#config-form'); const old=button?.textContent; if(button){button.disabled=true;button.textContent='读取配置…';} notice(''); f.reset(); f.elements.id.value=id; try { const c=await api('device-config-get',{id}); f.elements.deviceName.value=c.name||d?.name||''; f.elements.ssid.value=c.ssid||''; f.elements.ip.value=dotted(c.ip); f.elements.gw.value=dotted(c.gw); f.elements.mask.value=dotted(c.mask); f.dataset.vid=c.usb_vid; f.dataset.pid=c.usb_pid; f.dataset.port=c.tcp_port||24800; f.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(f,c.keep_awake,d?.firmware); $('#config-dialog').showModal(); toast('设备配置已读取。','success'); } catch(e) { showError(e); } finally {if(button?.isConnected){button.disabled=false;button.textContent=old;}} }
 function ipv4(value) { const parts=value.split('.'); if(parts.length!==4||parts.some(p=>!/^\d{1,3}$/.test(p)||Number(p)>255))throw new Error('请输入有效的 IPv4 地址'); return parts.reduce((n,p)=>((n*256)+Number(p))>>>0,0); }
 function serialError(e) {
   const message=String(e.message||e).trim();
@@ -307,7 +321,7 @@ $('#read-serial-info').onclick=async()=>{
     form.elements.ip.value=dotted(c.ip||0); form.elements.gw.value=dotted(c.gw||0); form.elements.mask.value=dotted(c.mask||0);
     form.elements.usbVid.value=Number(c.usb_vid||0).toString(16).padStart(4,'0'); form.elements.usbPid.value=Number(c.usb_pid||0).toString(16).padStart(4,'0');
     form.elements.tcpPort.value=c.tcp_port||24800;
-    form.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(form,c.keep_awake);
+    form.dataset.sixKro=String(!!c.six_kro); writeKeepAwake(form,c.keep_awake,info.fw_ver);
     $('#serial-password-help').textContent=info.paired?'已配对设备：密码留空会保留设备当前密码；输入新密码可更改。':'首次配网：密码留空表示使用开放 Wi-Fi。';
     $('#serial-fields').hidden=false; $('#send-serial-config').disabled=false;
     serialStatus(info.paired?'已读取已配对设备信息，请确认网络参数。':'已读取未配对设备信息，请填写 Wi-Fi 名称和网络参数。','success');

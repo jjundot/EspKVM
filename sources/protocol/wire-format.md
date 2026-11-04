@@ -43,6 +43,8 @@ the complete snapshot, including six_kro. V1 NVS blobs migrate separately;
 wire compatibility with v1 is deliberately rejected.
 
 Heartbeat has nonzero id and reply flag. Reply once to requests, never to replies.
+HOST heartbeats carry `host_lock_state`; a DEVICE treats anything other than
+1 (unlocked) or 2 (locked) as unknown.
 Only a matching, unexpired probe produces an RTT sample. RTT is not input latency
 or USB completion latency.
 

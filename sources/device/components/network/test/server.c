@@ -14,7 +14,7 @@ bool hid_healthy(uint32_t gen) { return hid_ready(gen); }
 bool hid_mounted(void) { return true; }
 bool hid_sleeping(void) { return false; }
 uint8_t hid_leds(void) { return 0; }
-void hid_host_activity(uint32_t idle_s, bool known) { (void)idle_s; (void)known; }
+void hid_host_activity(uint32_t idle_s, bool known, uint32_t lock) { (void)idle_s; (void)known; (void)lock; }
 void hid_host_disconnected(void) {}
 uint32_t hid_keep_awake_status(uint32_t *moves) { *moves = 0; return 0; }
 void hid_wake_host(void) {}

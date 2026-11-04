@@ -41,7 +41,9 @@ int main(void){
  out.keep_awake.enabled=true;out.keep_awake.interval_min_s=2;out.keep_awake.interval_max_s=5;out.keep_awake.stop_after_s=0;out.keep_awake.host_active_within_s=0;
  assert(config_save(&out).code==0);assert(config_init()==ESP_OK);assert(config_get(&out,true));
  assert(out.has_keep_awake && out.keep_awake.enabled && out.keep_awake.interval_min_s==2 && out.keep_awake.interval_max_s==5 && !out.keep_awake.stop_after_s && !out.keep_awake.host_active_within_s);
- out.has_keep_awake=false;assert(config_save(&out).code==0);assert(config_get(&out,true));assert(out.keep_awake.enabled && out.keep_awake.interval_min_s==2);
+ out.keep_awake.mode=2;result=config_save(&out);assert(result.code==1 && result.field==12);
+ out.keep_awake.mode=1;assert(config_save(&out).code==0);assert(config_get(&out,true));assert(out.keep_awake.mode==1);
+ out.has_keep_awake=false;assert(config_save(&out).code==0);assert(config_get(&out,true));assert(out.keep_awake.enabled && out.keep_awake.interval_min_s==2 && out.keep_awake.mode==1);
  out.keep_awake.interval_min_s=6;result=config_save(&out);assert(result.code==1 && result.field==12);
  assert(config_reset()==ESP_OK);assert(config_init()==ESP_OK);assert(!config_get(&out,true));
  puts("C optional credential merge, redaction, dual-slot and migration passed");return 0;

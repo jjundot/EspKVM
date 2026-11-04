@@ -12,14 +12,21 @@ void keep_awake_user(keep_awake *s, uint64_t now, uint32_t random) {
     s->last_user_ms = now;
     schedule(s, now, random);
 }
-void keep_awake_host(keep_awake *s, uint64_t now, uint32_t idle_s, bool known) {
+void keep_awake_host(keep_awake *s, uint64_t now, uint32_t idle_s, bool known, uint32_t lock) {
     s->heartbeat_seen = true;
     s->heartbeat_ms = now;
     s->host_idle_ms = (uint64_t)idle_s * 1000;
     s->host_known = known;
+    s->host_lock = lock;
 }
 unsigned keep_awake_state(const keep_awake *s, uint64_t now) {
     if (!s->config.enabled) return KA_OFF;
+    if (s->config.mode == KA_MODE_HOST_UNLOCKED) {
+        if (!s->heartbeat_seen || now - s->heartbeat_ms >= 3000) return KA_NO_HOST;
+        if (s->host_lock == HOST_LOCKED) return KA_HOST_LOCKED;
+        if (s->host_lock != HOST_UNLOCKED) return KA_LOCK_UNKNOWN;
+        return s->moves ? KA_ACTIVE : KA_WAITING;
+    }
     if (s->config.stop_s && now - s->last_user_ms >= (uint64_t)s->config.stop_s * 1000)
         return KA_EXPIRED;
     if (s->config.host_s && (!s->heartbeat_seen || now - s->heartbeat_ms >= 3000)) return KA_NO_HOST;

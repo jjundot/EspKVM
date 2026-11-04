@@ -58,7 +58,7 @@ func ValidateConfig(c *pb.Config, paired bool) (uint32, error) {
 	if c.TcpPort == 0 || c.TcpPort > 65535 {
 		return bad(10)
 	}
-	if p := c.KeepAwake; p != nil && (p.IntervalMinS < 1 || p.IntervalMaxS < p.IntervalMinS || p.IntervalMaxS > 86400) {
+	if p := c.KeepAwake; p != nil && (p.IntervalMinS < 1 || p.IntervalMaxS < p.IntervalMinS || p.IntervalMaxS > 86400 || p.Mode > 1) {
 		return bad(12)
 	}
 	return 0, nil

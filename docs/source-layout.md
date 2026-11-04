@@ -56,6 +56,7 @@ EspKVM/
 │           ├── serialcfg/         # 串口单请求事务、日志帧读取
 │           ├── input/             # 平台无关事件、物理状态/引用计数、热键、鼠标合并
 │           ├── capture/           # source_windows.go(钩子/Raw Input/回注)、source_linux.go(evdev/grab)、gate.go
+│           ├── hostlock/          # HOST 会话锁屏状态(Windows WTS、Linux logind)
 │           ├── keymap/            # 扫描码/KEY_* 到 HID Usage 映射
 │           ├── switcher/          # 唯一 dispatcher 与切换状态机
 │           ├── devices/           # 每设备生命周期、重连、配置请求

@@ -46,7 +46,7 @@ func TestKeepAwakeValidation(t *testing.T) {
 	if _, err := ValidateConfig(c, false); err != nil {
 		t.Fatal("C=0/D=0 should be valid", err)
 	}
-	for _, p := range []*pb.KeepAwake{{IntervalMinS: 0, IntervalMaxS: 60}, {IntervalMinS: 61, IntervalMaxS: 60}, {IntervalMinS: 1, IntervalMaxS: 86401}} {
+	for _, p := range []*pb.KeepAwake{{IntervalMinS: 0, IntervalMaxS: 60}, {IntervalMinS: 61, IntervalMaxS: 60}, {IntervalMinS: 1, IntervalMaxS: 86401}, {IntervalMinS: 1, IntervalMaxS: 60, Mode: 2}} {
 		c.KeepAwake = p
 		if field, err := ValidateConfig(c, false); err == nil || field != 12 {
 			t.Fatalf("invalid policy accepted: %+v", p)

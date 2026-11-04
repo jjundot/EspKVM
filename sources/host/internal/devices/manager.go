@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/jjundot/EspKVM/internal/config"
 	"github.com/jjundot/EspKVM/internal/debuglog"
+	"github.com/jjundot/EspKVM/internal/hostlock"
 	"github.com/jjundot/EspKVM/internal/input"
 	"github.com/jjundot/EspKVM/internal/protocol/pb"
 	"github.com/jjundot/EspKVM/internal/session"
@@ -61,6 +62,7 @@ type Manager struct {
 	cancel     context.CancelFunc
 	store      *config.Store
 	dispatcher *switcher.Dispatcher
+	hostLock   *hostlock.Monitor
 	owner      [16]byte
 	mu         sync.Mutex
 	records    map[string]*record
@@ -72,7 +74,7 @@ type Manager struct {
 
 func New(ctx context.Context, store *config.Store, d *switcher.Dispatcher) (*Manager, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	m := &Manager{ctx: ctx, cancel: cancel, store: store, dispatcher: d, records: map[string]*record{}}
+	m := &Manager{ctx: ctx, cancel: cancel, store: store, dispatcher: d, hostLock: hostlock.Start(ctx), records: map[string]*record{}}
 	if _, e := rand.Read(m.owner[:]); e != nil {
 		cancel()
 		return nil, e
@@ -224,6 +226,7 @@ func (m *Manager) lifecycle(ctx context.Context, r *record) {
 			}
 			r.current = conn
 			conn.HostActivity = m.dispatcher.HostActivity
+			conn.HostLock = m.hostLock.State
 			// An explicit request queued during this successful handshake is
 			// already satisfied. Do not retain it as permission to seize a later owner.
 			select {

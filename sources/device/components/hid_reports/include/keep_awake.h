@@ -2,20 +2,22 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-enum { KA_OFF, KA_NO_HOST, KA_HOST_IDLE, KA_EXPIRED, KA_WAITING, KA_ACTIVE };
+enum { KA_OFF, KA_NO_HOST, KA_HOST_IDLE, KA_EXPIRED, KA_WAITING, KA_ACTIVE, KA_HOST_LOCKED, KA_LOCK_UNKNOWN };
+enum { KA_MODE_ACTIVITY, KA_MODE_HOST_UNLOCKED };
+enum { HOST_LOCK_UNKNOWN, HOST_UNLOCKED, HOST_LOCKED };
 typedef struct {
     bool enabled;
-    uint32_t min_s, max_s, stop_s, host_s;
+    uint32_t min_s, max_s, stop_s, host_s, mode;
 } keep_awake_config;
 typedef struct {
     keep_awake_config config;
     uint64_t last_user_ms, next_ms, heartbeat_ms, host_idle_ms;
     bool heartbeat_seen, host_known;
-    uint32_t moves;
+    uint32_t moves, host_lock;
 } keep_awake;
 void keep_awake_init(keep_awake *s, keep_awake_config config, uint64_t now, uint32_t random);
 void keep_awake_user(keep_awake *s, uint64_t now, uint32_t random);
-void keep_awake_host(keep_awake *s, uint64_t now, uint32_t idle_s, bool known);
+void keep_awake_host(keep_awake *s, uint64_t now, uint32_t idle_s, bool known, uint32_t lock);
 unsigned keep_awake_state(const keep_awake *s, uint64_t now);
 bool keep_awake_poll(keep_awake *s, uint64_t now);
 void keep_awake_moved(keep_awake *s, uint64_t now, uint32_t random);

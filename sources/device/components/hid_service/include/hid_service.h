@@ -10,7 +10,7 @@ bool hid_mounted(void);
 bool hid_sleeping(void);
 uint8_t hid_leds(void);
 bool hid_submit(const ek_Msg *msg,uint32_t generation);
-void hid_host_activity(uint32_t idle_s, bool known);
+void hid_host_activity(uint32_t idle_s, bool known, uint32_t lock_state);
 void hid_host_disconnected(void);
 uint32_t hid_keep_awake_status(uint32_t *moves);
 void hid_wake_host(void);

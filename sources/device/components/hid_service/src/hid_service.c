@@ -246,9 +246,9 @@ bool hid_healthy(uint32_t generation) {
     return value;
 }
 uint8_t hid_leds(void) { return atomic_load(&leds); }
-void hid_host_activity(uint32_t idle_s, bool known) {
+void hid_host_activity(uint32_t idle_s, bool known, uint32_t lock_state) {
     portENTER_CRITICAL(&lock);
-    keep_awake_host(&awake, esp_timer_get_time() / 1000, idle_s, known);
+    keep_awake_host(&awake, esp_timer_get_time() / 1000, idle_s, known, lock_state);
     portEXIT_CRITICAL(&lock);
 }
 void hid_host_disconnected(void) {
@@ -383,7 +383,7 @@ esp_err_t hid_service_start(const ek_Config *config) {
         (ek_KeepAwake){.interval_min_s = 30, .interval_max_s = 60,
             .stop_after_s = 1800, .host_active_within_s = 120};
     keep_awake_init(&awake, (keep_awake_config){policy.enabled, policy.interval_min_s,
-        policy.interval_max_s, policy.stop_after_s, policy.host_active_within_s},
+        policy.interval_max_s, policy.stop_after_s, policy.host_active_within_s, policy.mode},
         esp_timer_get_time() / 1000, esp_random());
     engine.six_kro = compatible;
     engine.pending_release = true;

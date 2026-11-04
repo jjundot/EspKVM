@@ -24,6 +24,7 @@ message Heartbeat {
   bool reply = 2;
   uint32 host_idle_s = 3; // Age of last physical HOST input, across all targets.
   bool host_activity_known = 4; // False until physical input has been observed.
+  uint32 host_lock_state = 5; // 0=unknown,1=unlocked,2=locked; older HOSTs omit it.
 }
 message SessionEnd { uint32 reason = 1; } // 1=authenticated replacement
 
@@ -52,7 +53,7 @@ message Status {
   uint32 kb_leds     = 4;   // bit0 Num, bit1 Caps, bit2 Scroll
   sint32 rssi        = 5;
   string fw_version  = 6;
-  uint32 keep_awake_state = 7; // 0=off,1=no heartbeat,2=HOST idle,3=C expired,4=waiting,5=keeping awake
+  uint32 keep_awake_state = 7; // 0=off,1=no heartbeat,2=HOST idle,3=C expired,4=waiting,5=keeping awake,6=HOST locked,7=lock state unknown
   uint32 keep_awake_moves = 8;
   bool   usb_suspended = 9; // USB host asleep or re-enumerating after wake; releases are already safe
 }
@@ -62,6 +63,7 @@ message KeepAwake {
   uint32 interval_max_s = 3; // B; A..86400
   uint32 stop_after_s = 4; // C; 0=unlimited, defaults to 1800
   uint32 host_active_within_s = 5; // D; 0=unconditional, including offline HOST
+  uint32 mode = 6; // 0=C/D activity, 1=while HOST is unlocked (C/D kept but not applied)
 }
 message Config {
   string name     = 1;

@@ -62,6 +62,7 @@ type Session struct {
 	epoch          time.Time
 	Challenge      *pb.Challenge
 	HostActivity   func() (uint32, bool)
+	HostLock       func() uint32
 }
 
 func writeAll(w io.Writer, b []byte) error {
@@ -452,6 +453,9 @@ func (s *Session) heartbeat(id uint32, reply bool) *pb.Heartbeat {
 	h := &pb.Heartbeat{Id: id, Reply: reply}
 	if s.HostActivity != nil {
 		h.HostIdleS, h.HostActivityKnown = s.HostActivity()
+	}
+	if s.HostLock != nil {
+		h.HostLockState = s.HostLock()
 	}
 	return h
 }

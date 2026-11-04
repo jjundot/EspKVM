@@ -110,7 +110,7 @@ uint32_t config_validate(const ek_Config *c, bool has_pair) {
         return 10;
     if (c->has_keep_awake && (!c->keep_awake.interval_min_s ||
         c->keep_awake.interval_max_s < c->keep_awake.interval_min_s ||
-        c->keep_awake.interval_max_s > 86400))
+        c->keep_awake.interval_max_s > 86400 || c->keep_awake.mode > 1))
         return 12;
     return 0;
 }

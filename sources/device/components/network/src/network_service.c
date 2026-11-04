@@ -279,12 +279,14 @@ static bool dispatch(connection *c) {
             if(c->msg.body.heartbeat.id==c->probe && now_ms()-c->probe_sent<=1000) {
                 c->probe=0;
                 hid_host_activity(c->msg.body.heartbeat.host_idle_s,
-                                  c->msg.body.heartbeat.host_activity_known);
+                                  c->msg.body.heartbeat.host_activity_known,
+                                  c->msg.body.heartbeat.host_lock_state);
             }
             return true;
         }
         hid_host_activity(c->msg.body.heartbeat.host_idle_s,
-                          c->msg.body.heartbeat.host_activity_known);
+                          c->msg.body.heartbeat.host_activity_known,
+                          c->msg.body.heartbeat.host_lock_state);
         c->msg.body.heartbeat.reply = true;
         return send_msg(c, true, now_ms() + 100);
     case ek_Msg_cfg_get_tag:
