@@ -41,6 +41,8 @@ file(REMOVE
  "${output_dir}/espkvm"
  "${output_dir}/espkvmctl.exe"
  "${output_dir}/espkvmctl"
+ "${output_dir}/espkvm_x86_64_linux.exe"
+ "${output_dir}/espkvm_aarch64_linux.exe"
 )
 
 function(build_host goos goarch filename)
@@ -59,5 +61,5 @@ function(build_host goos goarch filename)
 endfunction()
 
 build_host(windows amd64 espkvm_x86_64_windows.exe)
-build_host(linux amd64 espkvm_x86_64_linux.exe)
-build_host(linux arm64 espkvm_aarch64_linux.exe)
+build_host(linux amd64 espkvm_x86_64_linux)
+build_host(linux arm64 espkvm_aarch64_linux)
